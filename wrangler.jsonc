@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ai-taxi-training",
+  "account_id": "5896bae4ad9ddcc238549927e70d698d",
+  "compatibility_date": "2026-09-12",
+  "assets": {
+    "directory": "./dist"
+  }
+}
