@@ -523,7 +523,7 @@ export const GAME_CONFIG = {
         // Completed Taxi jobs needed to fully train one region.
         requiredMissionsPerRegion: 3,
         // Dollars earned per second for each completed Taxi training mission.
-        passiveIncomePerMission: 0.06,
+        passiveIncomePerMission: 0.05,
         // Applied to the whole Taxi contribution once the region is fully trained.
         completionMultiplier: 2,
       },
