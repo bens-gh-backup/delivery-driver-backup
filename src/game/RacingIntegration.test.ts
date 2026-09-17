@@ -56,7 +56,10 @@ function createGameStub(): GameStub {
     fuel: { hasFuel: true, update: vi.fn() },
     police: { isPursuitActive: false },
     traffic: { setSuspended: vi.fn() },
-    town: { autoBodyShops: [{ position: new Vector3(100, 0, 200), radius: 20 }] },
+    town: {
+      autoBodyShops: [{ position: new Vector3(100, 0, 200) }],
+      dealerships: [{ serviceArea: { x: 100, z: 200, halfX: 27, halfZ: 22 } }],
+    },
     ui: {
       closePhone: vi.fn(),
       closeShop: vi.fn(),
@@ -202,18 +205,19 @@ describe("Game racing integration", () => {
   });
 
   it.each([
-    ["away from an auto shop", (game: GameStub) => { game.town.autoBodyShops[0].position.set(0, 0, 0); }],
+    ["at a repair shop away from a dealership", (game: GameStub) => { game.town.dealerships[0].serviceArea.x = 0; }],
+    ["during pursuit", (game: GameStub) => { game.police.isPursuitActive = true; }],
     ["during an active job", (game: GameStub) => { game.activity.hasActiveActivity = true; }],
     ["while moving", (game: GameStub) => { game.player.getSpeedMph.mockReturnValue(GAME_CONFIG.progression.equipMaxSpeedMph + 1); }],
   ])("blocks vehicle purchases %s", (_label, mutate) => {
     const game = createGameStub();
     mutate(game);
 
-    expect(call<string>("purchaseVehicle", game, "used-compact")).toBe("STOP AT AN AUTO SHOP WITHOUT AN ACTIVE JOB");
+    expect(call<string>("purchaseVehicle", game, "used-compact")).toBe("STOP AT A DEALERSHIP WITHOUT AN ACTIVE JOB");
     expect(game.profile.purchaseVehicle).not.toHaveBeenCalled();
   });
 
-  it("allows a vehicle purchase only at a stopped nearby auto shop", () => {
+  it("allows a vehicle purchase only while stopped in a dealership lot", () => {
     const game = createGameStub();
 
     expect(call<string>("purchaseVehicle", game, "used-compact")).toBe("USED COMPACT PURCHASED AND EQUIPPED");

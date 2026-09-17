@@ -33,6 +33,8 @@ export const CITY_STYLE = {
   maximumWindowRows: 10,
   maximumWindowColumns: 6,
   facades: {
+    // Minimum projection between decorative layers; tiny offsets shimmer at driving distances.
+    surfaceStep: .16,
     bayWidth: 7,
     windowWidth: 2.8,
     windowHeight: 3.8,

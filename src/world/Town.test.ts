@@ -27,7 +27,8 @@ describe("TownGenerator", () => {
       expect(road).toMatchObject({ type: "city", allowsMissionStops: true });
       expect(clinic.id).toBe(`clinic-${clinic.regionId.replace("block-", "")}`);
     }
-    expect(town.legalDrivingAreas).toHaveLength(20);
+    expect(town.dealerships).toHaveLength(GAME_CONFIG.dealership.count);
+    expect(town.legalDrivingAreas).toHaveLength(20 + GAME_CONFIG.dealership.count);
     const services = [...town.gasStations, ...town.autoBodyShops];
     expect(new Set(services.map(({ position }) => `${position.x},${position.z}`)).size).toBe(20);
     for (let first = 0; first < services.length; first++) {
@@ -73,6 +74,50 @@ describe("TownGenerator", () => {
     expect(scene.meshes.length).toBe(town.meshes.length);
     scene.dispose();
     engine.dispose();
+  });
+
+  it("keeps repair bays open and dealerships separate, spaced, and reachable from city roads", () => {
+    const engine = new NullEngine();
+    const scene = new Scene(engine);
+    const town = new TownGenerator(scene).generate();
+    const blocked = (x: number, z: number, radius = 0) => town.staticColliders.some(c =>
+      Math.abs(x - c.x) < c.halfX + radius && Math.abs(z - c.z) < c.halfZ + radius);
+    for (const shop of town.autoBodyShops) {
+      // A car-sized corridor stays clear from the forecourt through the bay.
+      for (let d = -10; d <= 12; d++) {
+        expect(blocked(shop.position.x, shop.position.z + shop.bayDirection * d, 3)).toBe(false);
+      }
+      expect(blocked(shop.position.x + 13.25, shop.position.z + shop.bayDirection * 11)).toBe(true);
+      expect(blocked(shop.position.x, shop.position.z + shop.bayDirection * 18.25)).toBe(true);
+    }
+    expect(town.dealerships).toHaveLength(GAME_CONFIG.dealership.count);
+    const query = new WorldQuery(town.staticColliders, town.roads, GAME_CONFIG.world.roadWidth / 2,
+      GAME_CONFIG.world.roadWidth / 2 + GAME_CONFIG.world.sidewalkWidth, 64, town.legalDrivingAreas);
+    for (const dealer of town.dealerships) {
+      const ns = dealer.roadAxis === "northSouth";
+      const coordinate = ns ? dealer.position.x : dealer.position.z;
+      const offset = GAME_CONFIG.world.roadWidth / 2 + GAME_CONFIG.world.sidewalkWidth + GAME_CONFIG.dealership.lotDepth / 2;
+      const road = town.roads.find(r => r.axis === dealer.roadAxis && Math.abs(r.center - (coordinate - dealer.roadSide * offset)) < .01);
+      expect(road).toMatchObject({ type: "city", allowsMissionStops: true });
+      for (let d = 0; d <= GAME_CONFIG.dealership.lotDepth / 2 + GAME_CONFIG.world.sidewalkWidth; d++) {
+        const x = dealer.position.x - (ns ? dealer.roadSide * d : 0);
+        const z = dealer.position.z - (ns ? 0 : dealer.roadSide * d);
+        expect(blocked(x, z, 3)).toBe(false);
+        expect(query.isInLegalDrivingArea(x, z)).toBe(true);
+      }
+      for (const other of town.dealerships) if (other !== dealer) {
+        expect(Vector3.Distance(dealer.position, other.position)).toBeGreaterThanOrEqual(GAME_CONFIG.dealership.minimumSpacing);
+      }
+      for (const shop of town.autoBodyShops) {
+        const a = shop.serviceArea, b = dealer.serviceArea;
+        expect(Math.abs(a.x - b.x) < a.halfX + b.halfX + 20
+          && Math.abs(a.z - b.z) < a.halfZ + b.halfZ + 20).toBe(false);
+      }
+      for (const lot of town.buildings) {
+        expect(overlapsArea(lot.x, lot.z, 0, dealer.serviceArea)).toBe(false);
+      }
+    }
+    scene.dispose(); engine.dispose();
   });
 
   it("places every gas station mid-block on an interior city road with legal entrance inlets", () => {
@@ -138,7 +183,7 @@ describe("TownGenerator", () => {
       }
     }
 
-    expect(town.legalDrivingAreas).toHaveLength(GAME_CONFIG.fuel.stationCount + GAME_CONFIG.repair.shopCount);
+    expect(town.legalDrivingAreas).toHaveLength(GAME_CONFIG.fuel.stationCount + GAME_CONFIG.repair.shopCount + GAME_CONFIG.dealership.count);
     for (let index = 0; index < town.gasStations.length; index++) {
       const area = town.legalDrivingAreas[index];
       for (const building of town.buildings) {

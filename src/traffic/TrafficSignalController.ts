@@ -1,3 +1,4 @@
+import { WORLD_SURFACES } from "../world/SurfaceLayout";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
@@ -262,13 +263,13 @@ export class TrafficSignalController {
       depth: direction === "north" || direction === "south" ? 0.7 : laneWidth,
     }, scene);
     if (direction === "east") {
-      stopLine.position.set(intersectionX - roadHalf - setback, 0.13, intersectionZ - roadHalf / 2);
+      stopLine.position.set(intersectionX - roadHalf - setback, WORLD_SURFACES.markings - .02, intersectionZ - roadHalf / 2);
     } else if (direction === "west") {
-      stopLine.position.set(intersectionX + roadHalf + setback, 0.13, intersectionZ + roadHalf / 2);
+      stopLine.position.set(intersectionX + roadHalf + setback, WORLD_SURFACES.markings - .02, intersectionZ + roadHalf / 2);
     } else if (direction === "north") {
-      stopLine.position.set(intersectionX - roadHalf / 2, 0.13, intersectionZ + roadHalf + setback);
+      stopLine.position.set(intersectionX - roadHalf / 2, WORLD_SURFACES.markings - .02, intersectionZ + roadHalf + setback);
     } else {
-      stopLine.position.set(intersectionX + roadHalf / 2, 0.13, intersectionZ - roadHalf - setback);
+      stopLine.position.set(intersectionX + roadHalf / 2, WORLD_SURFACES.markings - .02, intersectionZ - roadHalf - setback);
     }
     stopLine.material = lineMaterial;
     stopLines.push(stopLine);

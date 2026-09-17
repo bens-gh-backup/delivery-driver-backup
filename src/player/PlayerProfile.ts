@@ -1,4 +1,4 @@
-import { TRAINING_CATEGORIES, categoryIncome, sanitizeTrainingProgress, type TrainingContext, type TrainingProgress, type TrainingRegion, type TrainingCategoryId } from "../training/Training";
+import { TRAINING_CATEGORIES, categoryIncome, sanitizeTrainingProgress, type TrainingReward, type TrainingContext, type TrainingProgress, type TrainingRegion, type TrainingCategoryId } from "../training/Training";
 import { GAME_CONFIG } from "../game/config";
 import { PassengerType, type PoliceCitation, type RideHistoryEntry, type RideResult, type RideTier } from "../game/types";
 import {
@@ -53,17 +53,20 @@ export class PlayerProfile {
     return this.getRegionBaseIncomePerSecond(regionId) * this.getRaceMultiplier(regionId);
   }
 
-  private creditTraining(context?: TrainingContext): void {
-    if (!context || !this.trainingRegionIds.has(context.regionId)) return;
+  private creditTraining(context?: TrainingContext): TrainingReward | null {
+    if (!context || !this.trainingRegionIds.has(context.regionId)) return null;
     const category = TRAINING_CATEGORIES.find(category => category.id === context.categoryId);
-    if (!category) return;
+    if (!category) return null;
     const count = this.getTrainingCount(context.regionId, context.categoryId);
-    if (count >= category.required) return;
+    if (count >= category.required) return null;
+    const incomeBefore = this.getRegionPassiveIncomePerSecond(context.regionId);
     const progress = this.trainingProgress[context.regionId] ??= {};
     progress[context.categoryId] = count + 1;
     this.trainingRevision++;
     this.recalculateTrainingIncome();
     this.dirty = true;
+    return { ...context, before: count, after: count + 1, required: category.required,
+      incomeBefore, incomeAfter: this.getRegionPassiveIncomePerSecond(context.regionId) };
   }
 
   private recalculateTrainingIncome(): void {
@@ -79,15 +82,16 @@ export class PlayerProfile {
     this.dirty = true;
   }
 
-  completeAmbulanceJob(payout: number, training?: TrainingContext): void {
+  completeAmbulanceJob(payout: number, training?: TrainingContext): TrainingReward | null {
     this.moneyValue += finiteNonnegative(payout, 0);
-    this.creditTraining(training);
+    const reward = this.creditTraining(training);
     this.saveNow();
+    return reward;
   }
 
   /** Keeps pre-v7 callers and old development utilities compatible during save migration. */
-  completePackage(payout: number, training?: TrainingContext): void {
-    this.completeAmbulanceJob(payout, training);
+  completePackage(payout: number, training?: TrainingContext): TrainingReward | null {
+    return this.completeAmbulanceJob(payout, training);
   }
 
   private jailFreeCardsValue: number;
@@ -180,8 +184,8 @@ export class PlayerProfile {
     this.saveNow();
   }
 
-  completeRide(result: RideResult, training?: TrainingContext): void {
-    this.creditTraining(training);
+  completeRide(result: RideResult, training?: TrainingContext): TrainingReward | null {
+    const reward = this.creditTraining(training);
     this.jailFreeCardsValue += Math.floor(finiteNonnegative(result.cardsEarned, 0));
     this.vehicleCouponsValue += Math.floor(finiteNonnegative(result.couponsEarned, 0));
     const freeUpgradeCreditsEarned = Math.floor(finiteNonnegative(result.freeUpgradeCreditsEarned, 0));
@@ -198,6 +202,7 @@ export class PlayerProfile {
     this.rideHistoryValue = [historyEntry, ...this.rideHistoryValue]
       .slice(0, GAME_CONFIG.progression.rideHistoryLimit);
     this.saveNow();
+    return reward;
   }
 
   spend(requestedAmount: number): number {

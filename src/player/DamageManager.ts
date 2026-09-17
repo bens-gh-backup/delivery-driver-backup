@@ -1,6 +1,7 @@
 import { GAME_CONFIG } from "../game/config";
 import type { AutoBodyShop } from "../game/types";
-import { clamp, distanceXZ } from "../utils/math";
+import { isInServiceArea } from "../world/ServiceAreas";
+import { clamp } from "../utils/math";
 import type { PlayerCar } from "./PlayerCar";
 import type { PlayerProfile } from "./PlayerProfile";
 
@@ -49,7 +50,7 @@ export class DamageManager {
 
   private checkNearShop(player: PlayerCar, shops: AutoBodyShop[]): boolean {
     for (const shop of shops) {
-      if (distanceXZ(player.root.position, shop.position) <= shop.radius) {
+      if (isInServiceArea(player.root.position, shop.serviceArea)) {
         return true;
       }
     }

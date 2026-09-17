@@ -74,6 +74,28 @@ describe("regional AI training", () => {
       .toEqual({ "block-0-0": { taxi: taxi.required, ambulance_driver: 0 } });
   });
 
+  it("returns exact transient income receipts including completion bonuses and race multipliers", () => {
+    const f = fixture(), region = f.regions[0];
+    f.profile.debugUnlockRacing();
+    f.profile.recordRaceFinish(region.id, 2);
+    const multiplier = f.profile.getRaceMultiplier(region.id);
+    const category = TRAINING_CATEGORIES.find(c => c.id === "ambulance_driver")!;
+    for (let before = 0; before < category.required; before++) {
+      const reward = f.profile.completeAmbulanceJob(0, { regionId: region.id, categoryId: category.id });
+      expect(reward).toMatchObject({ regionId: region.id, categoryId: category.id,
+        before, after: before + 1, required: category.required });
+      expect(reward!.incomeBefore).toBeCloseTo(categoryIncome(category.id, before) * multiplier);
+      expect(reward!.incomeAfter).toBeCloseTo(categoryIncome(category.id, before + 1) * multiplier);
+    }
+    expect(f.profile.completeAmbulanceJob(5, { regionId: region.id, categoryId: category.id })).toBeNull();
+    expect(f.profile.completeAmbulanceJob(0)).toBeNull();
+    expect(f.profile.completeAmbulanceJob(0, { regionId: "missing", categoryId: category.id })).toBeNull();
+    const saved = f.store.load()!;
+    expect(saved).not.toHaveProperty("lastTrainingReward");
+    const restored = new PlayerProfile(f.store); restored.configureTrainingRegions(f.regions);
+    expect(restored.passiveIncomePerSecond).toBeCloseTo(f.profile.passiveIncomePerSecond);
+  });
+
   it("pays fractional active income without frame saves and persists progress with payment", () => {
     const f = fixture(), region = f.regions[0];
     const unitIncome = categoryIncome("ambulance_driver", 1);
@@ -168,6 +190,11 @@ describe("regional AI training", () => {
         f.player.root.position.copyFrom(offer.destinationPoint.position); rides.update(0,f.player,true);
         rides.update(0,f.player,true);
         expect(f.profile.getTrainingCount(region.id,categoryId)).toBe(Math.min(required,i+1));
+        if (i < required) {
+          expect(rides.lastTrainingReward).toMatchObject({ regionId: region.id, categoryId, before: i, after: i + 1 });
+          expect(rides.lastTrainingReward!.incomeAfter - rides.lastTrainingReward!.incomeBefore)
+            .toBeCloseTo(categoryIncome(categoryId, i + 1) - categoryIncome(categoryId, i));
+        } else expect(rides.lastTrainingReward).toBeNull();
       }
       expect(f.profile.completedRides).toBe(required+1);
       expect(f.profile.passiveIncomePerSecond).toBeCloseTo(rate);

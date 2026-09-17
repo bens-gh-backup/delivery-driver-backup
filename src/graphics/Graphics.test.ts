@@ -133,12 +133,14 @@ describe("enhanced graphics",()=>{
     }
     expect(b.gasStations).toEqual(a.gasStations);
     expect(b.autoBodyShops).toEqual(a.autoBodyShops);
+    expect(b.dealerships).toEqual(a.dealerships);
     expect(b.deliveryPoints).toEqual(a.deliveryPoints);
     expect(b.legalDrivingAreas).toEqual(a.legalDrivingAreas);
     expect(b.meshes.length).toBeLessThan(210);
     expect(b.districts).toEqual(a.districts);
     expect(enhanced.scene.meshes.length).toBe(b.meshes.length);
-    expect(enhanced.scene.materials.length).toBeLessThanOrEqual(20);
+    // Three shared sign materials, one display-car material and one dealership facade.
+    expect(enhanced.scene.materials.length).toBeLessThanOrEqual(25);
     expect(enhanced.scene.textures).toHaveLength(0);
     expect(b.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThan(GAME_CONFIG.graphics.worldTriangleBudget);
   });

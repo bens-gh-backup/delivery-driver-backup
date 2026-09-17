@@ -1,5 +1,7 @@
+import { suggestTraining } from "../training/TrainingSuggestion";
+import type { TrainingContext, TrainingReward } from "../training/Training";
 import { CITY_STYLE } from "../world/CityStyle";
-import { TRAINING_CATEGORIES, TRAINING_JOBS_PER_REGION, categoryIncome, type TrainingCategoryId } from "../training/Training";
+import { TRAINING_CATEGORIES, TRAINING_JOBS_PER_REGION, type TrainingCategoryId } from "../training/Training";
 import { RideHud } from "./RideHud";
 import { setText, setVisible, setClass, setStyle } from "./DomUpdates";
 import { passengerArchetype } from "../ride/PassengerArchetypes";
@@ -51,6 +53,7 @@ export interface GameUIActions {
   continueRace?: () => void;
   abortRace?: () => void;
   openVehicleShop?: () => boolean;
+  canUseVehicleShop?: () => boolean;
 }
 
 export interface UiRaceSnapshot {
@@ -77,6 +80,7 @@ interface MapMarkers {
   player: HTMLDivElement;
   pickup: HTMLDivElement;
   dropoff: HTMLDivElement;
+  reward: HTMLDivElement;
 }
 
 export class GameUI {
@@ -90,6 +94,7 @@ export class GameUI {
   private readonly refuelButton: HTMLButtonElement;
   private readonly repairOverlay: HTMLDivElement;
   private readonly repairButton: HTMLButtonElement;
+  private readonly dealershipOverlay: HTMLDivElement;
   private readonly browseInventoryButton: HTMLButtonElement;
   private readonly rideResult: HTMLDivElement;
   private readonly citationOverlay: HTMLDivElement;
@@ -139,7 +144,17 @@ export class GameUI {
   private phoneTown: Town | null = null;
   private phoneTab: MissionLicenseId | "training" | "garage" | "upgrades" | "scorecard" = "training";
   private trainingRegionId: string | undefined;
-  private trainingCategoryId: TrainingCategoryId | undefined;
+  private trainingCategoryId: TrainingCategoryId | "race" | undefined;
+  private trainingSuggestion: TrainingContext | null = null;
+  private suggestionKey = "";
+  private lastWorkedRegionId: string | undefined;
+  private lastSeenReward: TrainingReward | null = null;
+  private highlightedRegionId: string | undefined;
+  private highlightSeconds = 0;
+  private rewardHtmlReceipt: TrainingReward | null = null;
+  private rewardHtmlCache = "";
+  private suggestedRaceRegionId: string | undefined;
+  private readonly phoneSectionHtml = new Map<string, string>();
   private phoneLiveValues: string[] = [];
   private phoneLiveNodes: HTMLElement[] = [];
   private trainingMapCache = "";
@@ -167,6 +182,14 @@ export class GameUI {
     this.phoneTown = town;
     this.trainingMapCache = "";
     this.trainingMapRegions = null;
+    this.trainingMapRevision = -1;
+    this.trainingRegionId = undefined;
+    this.trainingCategoryId = undefined;
+    this.lastSeenReward = null;
+    this.lastWorkedRegionId = undefined;
+    this.suggestionKey = "";
+    this.highlightedRegionId = undefined;
+    this.highlightSeconds = 0;
     this.lastPhoneHtml = "";
   }
 
@@ -179,6 +202,11 @@ export class GameUI {
     const previousState = this.raceSnapshot?.state ?? "IDLE";
     const active = snapshot?.state === "COUNTDOWN" || snapshot?.state === "RACING";
     this.raceSnapshot = snapshot;
+    if (result && result !== this.raceResultData && GAME_CONFIG.presentation.progressionFeedback
+      && (result.previousBest === null || result.bestFinish < result.previousBest)) {
+      this.highlightedRegionId = result.regionId;
+      this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
+    }
     this.raceResultData = result;
     this.pauseRaceAbort.classList.toggle("hidden", !active && snapshot?.state !== "FINISHED");
     if (active && previousState !== snapshot?.state) {
@@ -363,16 +391,23 @@ export class GameUI {
         this.closePhone();
         return;
       }
-      const region = target.closest<HTMLButtonElement>("[data-training-region], [data-training-suggestion]");
+      const region = target.closest<HTMLButtonElement>("[data-training-region]");
       if (region) {
-        this.trainingRegionId = region.dataset.trainingRegion ?? region.dataset.trainingSuggestion;
-        this.trainingCategoryId = undefined;
+        this.trainingRegionId = region.dataset.trainingRegion;
+        this.trainingCategoryId = "taxi";
         this.lastPhoneHtml = "";
         return;
       }
       const category = target.closest<HTMLButtonElement>("[data-training-category]");
       if (category) {
-        this.trainingCategoryId = category.dataset.trainingCategory as TrainingCategoryId;
+        this.trainingCategoryId = category.dataset.trainingCategory as TrainingCategoryId | "race";
+        this.lastPhoneHtml = "";
+        return;
+      }
+      const chooseRace = target.closest<HTMLButtonElement>("[data-choose-race]");
+      if (chooseRace) {
+        this.trainingRegionId = this.trainingRegionId ?? chooseRace.dataset.chooseRace;
+        this.trainingCategoryId = "race";
         this.lastPhoneHtml = "";
         return;
       }
@@ -484,12 +519,15 @@ export class GameUI {
         <div class="repair-title">AUTO BODY</div>
         <div class="repair-actions">
           <button type="button" class="repair-button">REPAIR CAR</button>
-          <button type="button" class="browse-inventory-button">BROWSE INVENTORY</button>
         </div>
       </div>
     `;
     this.repairButton = this.repairOverlay.querySelector(".repair-button")!;
-    this.browseInventoryButton = this.repairOverlay.querySelector(".browse-inventory-button")!;
+    this.dealershipOverlay = document.createElement("div");
+    this.dealershipOverlay.className = "dealership-overlay hidden";
+    this.dealershipOverlay.innerHTML = `<div class="repair-panel dealership-panel"><div class="repair-title">DEALERSHIP</div>
+      <button type="button" class="browse-inventory-button">BROWSE INVENTORY</button></div>`;
+    this.browseInventoryButton = this.dealershipOverlay.querySelector(".browse-inventory-button")!;
     this.repairButton.addEventListener("pointerdown", (event) => {
       if (this.repairButton.disabled) return;
       event.preventDefault();
@@ -508,6 +546,7 @@ export class GameUI {
     this.browseInventoryButton.addEventListener("click", () => {
       if (!this.actions.openVehicleShop?.()) return;
       this.repairHeld = false;
+      this.dealershipOverlay.classList.add("hidden");
       this.openVehicleShopOverlay();
     });
     this.rideResult = document.createElement("div");
@@ -525,7 +564,7 @@ export class GameUI {
     this.vehicleShopOverlay.className = "vehicle-shop-overlay hidden";
     this.vehicleShopOverlay.innerHTML = `
       <div class="vehicle-shop-panel">
-        <div class="vehicle-shop-heading"><div class="vehicle-shop-title">VEHICLE SHOP</div><button type="button" class="phone-close" data-shop-close aria-label="Close vehicle shop">&times;</button></div>
+        <div class="vehicle-shop-heading"><div class="vehicle-shop-title">DEALERSHIP</div><button type="button" class="phone-close" data-shop-close aria-label="Close vehicle shop">&times;</button></div>
         <div class="vehicle-shop-content"></div>
       </div>
     `;
@@ -555,7 +594,7 @@ export class GameUI {
       : null;
     this.debugRaceTelemetry = this.debugProgression?.querySelector("[data-debug-race-telemetry]") ?? null;
 
-    root.append(this.startScreen, this.pauseScreen, this.hud, this.phone, this.map, this.refuelOverlay, this.repairOverlay, this.rideResult,
+    root.append(this.startScreen, this.pauseScreen, this.hud, this.phone, this.map, this.refuelOverlay, this.repairOverlay, this.dealershipOverlay, this.rideResult,
       this.raceCountdown, this.raceResultOverlay, this.vehicleShopOverlay, this.citationOverlay);
     if (this.debugProgression) root.append(this.debugProgression);
   }
@@ -569,6 +608,7 @@ export class GameUI {
     this.map.classList.add("hidden");
     this.refuelOverlay.classList.add("hidden");
     this.repairOverlay.classList.add("hidden");
+    this.dealershipOverlay.classList.add("hidden");
     this.rideResult.classList.add("hidden");
     this.citationOverlay.classList.add("hidden");
     this.closeVehicleShop();
@@ -597,6 +637,7 @@ export class GameUI {
     this.map.classList.add("hidden");
     this.refuelOverlay.classList.add("hidden");
     this.repairOverlay.classList.add("hidden");
+    this.dealershipOverlay.classList.add("hidden");
     this.phoneOpen = false;
     this.mapOpen = false;
     this.refuelHeld = false;
@@ -614,6 +655,7 @@ export class GameUI {
     this.map.classList.add("hidden");
     this.refuelOverlay.classList.add("hidden");
     this.repairOverlay.classList.add("hidden");
+    this.dealershipOverlay.classList.add("hidden");
     this.phoneOpen = false;
     this.mapOpen = false;
     this.refuelHeld = false;
@@ -644,9 +686,11 @@ export class GameUI {
     this.phoneOpen = !this.phoneOpen;
     this.phone.classList.toggle("hidden", !this.phoneOpen);
     if (this.phoneOpen) {
+      this.phone.querySelector(".phone-screen")?.scrollTo(0, 0);
       this.phoneTab = "training";
       this.trainingRegionId = undefined;
       this.trainingCategoryId = undefined;
+      this.suggestionKey = "";
       this.phoneFeedback = "";
       this.phoneFeedbackSeconds = 0;
       this.lastPhoneHtml = "";
@@ -747,13 +791,17 @@ export class GameUI {
     setClass(this.refuelStatus, "hidden", raceSession || !fuel.isRefueling);
     this.updateRefuelOverlay(fuel, fuelPercent, walletMoney);
     this.updateRepairOverlay(damage, damagePercent, walletMoney);
+    setVisible(this.dealershipOverlay, !raceSession && !this.vehicleShopOpen && !this.phoneOpen
+      && Boolean(this.actions.canUseVehicleShop?.()));
     if (raceSession) {
       this.policeMeter.classList.add("hidden");
       this.refuelOverlay.classList.add("hidden");
       this.repairOverlay.classList.add("hidden");
+      this.dealershipOverlay.classList.add("hidden");
       this.refuelHeld = false;
       this.repairHeld = false;
     }
+    this.updateTrainingFeedback(ride, ambulanceDriver, deltaTime);
     this.updateActivityHud(ride, ambulanceDriver, player);
     setText(this.collisionFlash, this.raceFeedbackSeconds > 0 ? this.raceFeedback : ride.collisionFlashText);
     setClass(this.collisionFlash, "hidden", this.raceFeedbackSeconds <= 0 && !ride.collisionFlashText);
@@ -844,17 +892,14 @@ export class GameUI {
     }
 
     this.setHtml(this.phone, "lastPhoneHtml", `
-      <div class="phone-panel ${this.phoneTab === "training" && !this.trainingRegionId ? "training-workspace" : ""}">
-        <div class="phone-topbar"><button type="button" class="phone-close" data-phone-close aria-label="Close phone" title="Close phone">&times;</button></div>
+      <div class="phone-panel ${this.phoneTab === "training" ? "training-workspace" : ""}">
+        <div class="phone-topbar">${this.phoneTab === "training" ? this.renderTrainingSummary(offers, profile) : ""}<button type="button" class="phone-close" data-phone-close aria-label="Close phone" title="Close phone">&times;</button></div>
         <div class="phone-tabs" role="tablist">
           ${this.phoneTabButton("training", "TRAINING")}
           ${this.phoneTabButton("upgrades", "UPGRADES")}
         </div>
         <div class="phone-screen">
-          ${this.phoneFeedback ? `<div class="phone-feedback">${this.phoneFeedback}</div>` : ""}
-          ${ride.isActive || ambulanceDriver.isActive ? `<button type="button" class="current-job-shortcut" data-current-job
-            data-region-id="${ride.activeRide?.training?.regionId ?? ambulanceDriver.activeOffer?.training?.regionId ?? ""}"
-            data-category-id="${ride.activeRide?.missionCategoryId ?? "ambulance_driver"}">CURRENT JOB</button>` : ""}
+          ${this.phoneTab === "training" ? "" : this.renderPhoneNotices(ride, ambulanceDriver)}
           ${content}
         </div>
         <div class="phone-home-indicator" aria-hidden="true"></div>
@@ -863,7 +908,23 @@ export class GameUI {
     for (let index = 0; index < this.phoneLiveNodes.length; index++) {
       setText(this.phoneLiveNodes[index], this.phoneLiveValues[index] ?? "");
     }
+    if (this.phoneTab === "training") {
+      for (const button of this.phone.querySelectorAll<HTMLButtonElement>("[data-training-region]")) {
+        const selected = button.dataset.trainingRegion === this.trainingRegionId;
+        setClass(button, "selected", selected);
+        setClass(button, "suggested", !this.trainingRegionId && GAME_CONFIG.presentation.recommendations
+          && button.dataset.trainingRegion === this.trainingSuggestion?.regionId);
+        if (button.getAttribute("aria-pressed") !== String(selected)) button.setAttribute("aria-pressed", String(selected));
+      }
+    }
     if (this.phoneMapMarkers && this.phoneTown) this.updateMapMarkers(this.phoneMapMarkers, ride, ambulanceDriver, player, this.phoneTown);
+  }
+
+  private renderPhoneNotices(ride: RideManager, ambulanceDriver: AmbulanceDriverManager): string {
+    return `<div data-phone-section="feedback">${this.phoneFeedback ? `<div class="phone-feedback">${this.phoneFeedback}</div>` : ""}</div>
+          <div data-phone-section="current-job">${ride.isActive || ambulanceDriver.isActive ? `<button type="button" class="current-job-shortcut" data-current-job
+            data-region-id="${ride.activeRide?.training?.regionId ?? ambulanceDriver.activeOffer?.training?.regionId ?? ""}"
+            data-category-id="${ride.activeRide?.missionCategoryId ?? "ambulance_driver"}">CURRENT JOB</button>` : ""}</div>`;
   }
 
   private phoneLive(value: string): string {
@@ -871,95 +932,100 @@ export class GameUI {
     return `<span data-phone-live="${index}"></span>`;
   }
 
+  private renderTrainingSummary(offers: RideOfferBoard, profile: PlayerProfile): string {
+    const total = offers.regions.reduce((sum, region) => sum + TRAINING_CATEGORIES.reduce((count, category) =>
+      count + profile.getTrainingCount(region.id, category.id), 0), 0);
+    const capacity = offers.regions.length * TRAINING_JOBS_PER_REGION;
+    const percent = capacity ? total / capacity * 100 : 0;
+    return `<div class="training-summary" data-phone-section="summary"><span class="training-eyebrow">TRAINING COMPLETION</span>
+      <strong class="training-percent">${percent.toFixed(1)}%</strong>
+      <div class="training-total-track" role="progressbar" aria-label="City training" aria-valuenow="${total}" aria-valuemin="0" aria-valuemax="${capacity}"><span style="width:${percent}%"></span></div>
+    </div>`;
+  }
+
   private renderTraining(offers: RideOfferBoard, ride: RideManager, packages: AmbulanceDriverManager,
     player: PlayerCar, profile: PlayerProfile): string {
-    const region = offers.regions.find(region => region.id === this.trainingRegionId);
-    if (!region) {
-      const trainingMoney = this.phoneLive(this.money(profile.money));
-      const trainingIncome = this.phoneLive(`$${profile.passiveIncomePerSecond.toFixed(2)}/sec`);
-      if (this.trainingMapRegions === offers.regions && this.trainingMapRevision === profile.trainingRevision) return this.trainingMapCache;
+    const town = this.phoneTown;
+    if (!town) return "";
+    const suggestionKey = `${profile.trainingRevision}:${TRAINING_CATEGORIES.map(c => profile.ownsMissionLicense(c.id))}`;
+    if (this.suggestionKey !== suggestionKey) {
+      this.suggestionKey = suggestionKey;
+      this.suggestedRaceRegionId = [...offers.regions].sort((a, b) =>
+        Number(profile.getRegionBaseIncomePerSecond(b.id) > 0) - Number(profile.getRegionBaseIncomePerSecond(a.id) > 0)
+        || Math.hypot(a.x - player.root.position.x, a.z - player.root.position.z)
+          - Math.hypot(b.x - player.root.position.x, b.z - player.root.position.z))[0]?.id;
+      this.trainingSuggestion = GAME_CONFIG.presentation.recommendations
+        ? suggestTraining(offers.regions, profile, player.root.position, this.lastWorkedRegionId) : null;
+    }
+    const counts = offers.regions.map(region => TRAINING_CATEGORIES.reduce((sum, category) =>
+      sum + profile.getTrainingCount(region.id, category.id), 0));
+    if (this.trainingMapRegions !== offers.regions || this.trainingMapRevision !== profile.trainingRevision) {
       this.trainingMapRegions = offers.regions;
       this.trainingMapRevision = profile.trainingRevision;
-      const town = this.phoneTown;
-      if (!town) return "";
-      const counts = new Map(offers.regions.map(region => [region.id,
-        TRAINING_CATEGORIES.reduce((sum, category) => sum + profile.getTrainingCount(region.id, category.id), 0)]));
-      const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
-      const capacity = offers.regions.length * TRAINING_JOBS_PER_REGION;
-      const percent = capacity ? Math.round(total / capacity * 1000) / 10 : 0;
-      const started = [...counts.values()].filter(count => count > 0).length;
-      const automated = [...counts.values()].filter(count => count === TRAINING_JOBS_PER_REGION).length;
-      const unfinished = offers.regions.filter(region => counts.get(region.id)! < TRAINING_JOBS_PER_REGION);
-      // Prefer work already underway, then a nearby untouched region. This is a
-      // cached suggestion, not a per-frame distance search or automatic selection.
-      const suggested = [...unfinished].sort((a, b) => counts.get(b.id)! - counts.get(a.id)!
-        || Math.hypot(a.x - player.root.position.x, a.z - player.root.position.z)
-          - Math.hypot(b.x - player.root.position.x, b.z - player.root.position.z))[0];
       const northernRow = Math.max(...offers.regions.map(region => region.bz));
-      const missions = offers.regions.map(region => {
+      const missions = offers.regions.map((region, index) => {
         const point = projectMapPoint(region.x, region.z, town);
-        const count = counts.get(region.id)!;
-        const blockWidth = region.maxX - region.minX - GAME_CONFIG.world.roadWidth;
-        const blockDepth = region.maxZ - region.minZ - GAME_CONFIG.world.roadWidth;
+        const count = counts[index];
         const state = count === TRAINING_JOBS_PER_REGION ? "automated" : count > 0 ? "in-progress" : "untrained";
-        const label = `${region.label}, ${count}/${TRAINING_JOBS_PER_REGION} trained${state === "automated" ? ", automated" : ""}. View jobs.`;
-        return `<button type="button" class="training-region ${state}"
-          tabindex="${region.bx === 0 && region.bz === northernRow ? 0 : -1}" data-training-region="${region.id}" style="left:${point.x}%;top:${point.y}%;width:${projectMapWidth(blockWidth * .72, town)}%;height:${projectMapHeight(blockDepth * .82, town)}%"
+        const label = `${region.label}, ${count}/${TRAINING_JOBS_PER_REGION} trained. View jobs.`;
+        return `<button type="button" class="training-region ${state}" aria-pressed="false"
+          tabindex="${region.bx === 0 && region.bz === northernRow ? 0 : -1}" data-training-region="${region.id}"
+          style="left:${point.x}%;top:${point.y}%;width:${projectMapWidth((region.maxX - region.minX - GAME_CONFIG.world.roadWidth) * .72, town)}%;height:${projectMapHeight((region.maxZ - region.minZ - GAME_CONFIG.world.roadWidth) * .82, town)}%"
           aria-label="${label}" title="${label}">
           <span class="region-number">${region.label.replace("Region ", "").padStart(2, "0")}${state === "automated" ? '<span class="region-check" aria-hidden="true">✓</span>' : ""}</span>
           <span class="region-count">${count}<span> / ${TRAINING_JOBS_PER_REGION}</span></span>
           ${count > 0 ? `<span class="training-region-progress" data-training-progress="${region.id}" aria-hidden="true"><span style="width:${count / TRAINING_JOBS_PER_REGION * 100}%"></span></span>` : '<span class="region-progress-empty" aria-hidden="true"></span>'}
         </button>`;
       }).join("");
-      this.trainingMapCache = `<div class="training-layout">
-          <section class="training-map" aria-label="City training regions">
-            <div class="training-map-scroll" tabindex="0" aria-label="City map. Scroll horizontally on smaller screens.">${this.mapContents(town, missions, "training-")}</div>
-            <p class="training-pan-hint">Swipe or scroll to explore the map</p>
-          </section>
-          <aside class="training-overview" aria-label="City training progress">
-            <div class="training-summary"><div class="training-eyebrow">CITY PROGRESS</div>
-              <div class="training-total-row"><div class="training-total">${percent.toFixed(1)}<span>%</span></div>
-                ${total === 0 ? '<span class="training-zero-hint">(select a region to view its jobs)</span>' : ""}</div>
-              <div class="training-total-track" role="progressbar" aria-label="City training" aria-valuenow="${total}" aria-valuemin="0" aria-valuemax="${capacity}"><span style="width:${capacity ? total / capacity * 100 : 0}%"></span></div>
-              <p>${total} of ${capacity} missions trained</p>
-              <dl><div><dt>Regions started</dt><dd>${started}<span> / ${offers.regions.length}</span></dd></div>
-                <div><dt>Fully automated</dt><dd>${automated}<span> / ${offers.regions.length}</span></dd></div></dl>
-            </div>
-            <div class="training-next"><div class="training-eyebrow">${suggested ? total ? "PICK UP WHERE YOU LEFT OFF" : "YOUR FIRST STEP" : "NETWORK COMPLETE"}</div>
-              <h3>${suggested ? suggested.label : "You're fully trained."}</h3>
-              <p>${suggested ? `${counts.get(suggested.id)} of ${TRAINING_JOBS_PER_REGION} missions trained` : "Every region is automated. You can still take paid jobs."}</p>
-              ${suggested ? `<button type="button" data-training-suggestion="${suggested.id}">${total ? "Continue training" : "Start training"}<span aria-hidden="true">→</span></button>` : ""}
-              <div class="training-finances"><strong>${trainingMoney}</strong><span>AI INCOME ${trainingIncome}</span></div>
-            </div>
+      this.trainingMapCache = `<section class="training-map" aria-label="City training regions">
+        <div class="training-map-scroll" tabindex="0" aria-label="City map. Use arrow keys to move between regions.">${this.mapContents(town, missions, "training-")}</div>
+      </section>`;
+    }
+    const region = offers.regions.find(region => region.id === this.trainingRegionId);
+    const raceCost = this.racingLicenseCost();
+    return `<div class="training-dashboard">
+      <div class="training-layout">
+        <div class="training-map-column">
+          <div data-phone-section="map">${this.trainingMapCache}</div>
+          <div class="training-racing-goal" data-phone-section="race-goal">
+            <span class="race-goal-icon" aria-hidden="true">⚑</span>
+            <div><strong>${profile.ownsRacingLicense ? "Regional racing" : "Racing license"}</strong><span>${profile.ownsRacingLicense ? "Race to multiply AI income" : this.wholeMoney(raceCost)}</span></div>
+            ${profile.ownsRacingLicense
+              ? `<button type="button" data-choose-race="${region?.id ?? this.suggestedRaceRegionId ?? ""}">Choose a race</button>`
+              : `<button type="button" data-purchase-racing-license aria-label="Unlock Racing License (${this.wholeMoney(raceCost)})" ${profile.money < raceCost ? "disabled" : ""}>Unlock</button>`}
+          </div>
+        </div>
+        <div class="training-jobs-column">
+          <div class="training-finances" data-phone-section="finances"><strong>${this.phoneLive(this.money(profile.money))}</strong><span>AI INCOME ${this.phoneLive(`$${profile.passiveIncomePerSecond.toFixed(2)}/sec`)}</span></div>
+          <div class="training-notices">${this.renderPhoneNotices(ride, packages)}</div>
+          <aside class="training-job-panel" data-phone-section="jobs" aria-label="Region jobs">
+          ${region ? this.renderRegionJobs(region, offers, ride, packages, player, profile)
+            : `<div class="training-selection-empty"><span class="selection-map-icon" aria-hidden="true">↗</span><h3>Select a region</h3><p>Drive jobs. Grow AI income.</p>
+              <div class="activity-preview"><span>Taxi</span><span>${profile.ownsMissionLicense("ambulance_driver") ? "Ambulance" : `Ambulance · ${this.wholeMoney(getMissionLicense("ambulance_driver")!.unlockCost)}`}</span><span>${profile.ownsRacingLicense ? "Regional races" : `Racing · ${this.wholeMoney(raceCost)}`}</span></div></div>`}
           </aside>
-        </div>`;
-      return this.trainingMapCache;
-    }
-    const back = `<button type="button" class="training-back" data-training-back>← ${this.trainingCategoryId ? region.label : "TRAINING MAP"}</button>`;
-    if (this.trainingCategoryId) {
-      const category = getMissionLicense(this.trainingCategoryId)!;
-      const definition = TRAINING_CATEGORIES.find(item => item.id === this.trainingCategoryId)!;
-      const count = profile.getTrainingCount(region.id, definition.id);
-      const status = `<div class="training-caption">${region.label.toUpperCase()} · ${count}/${definition.required} TRAINED${count === definition.required ? " · AUTOMATED" : ""}</div>`;
-      if (!region.pickups.length) return `${back}${status}<p>No legal pickups available in this region.</p>`;
-      return back + status + (category.activityType === "ambulanceDriver"
-        ? this.renderAmbulanceDriverTab(packages, ride, player, profile, category, region.id)
-        : this.renderMissionTab(offers, ride, packages, player, profile, category, region.id));
-    }
-    return `${back}<div class="phone-title">${region.label.toUpperCase()}</div><div class="training-categories">
-      ${TRAINING_CATEGORIES.map(category => {
-        const count = profile.getTrainingCount(region.id, category.id);
-        const income = categoryIncome(category.id, count);
-        const owned = profile.ownsMissionLicense(category.id);
-        const cost = getMissionLicense(category.id)!.unlockCost;
-        const action = owned
-          ? `<button type="button" data-training-category="${category.id}">VIEW JOBS</button>`
-          : `<button type="button" data-purchase-license="${category.id}" ${profile.money < cost ? "disabled" : ""}>Unlock License (${this.wholeMoney(cost)})</button>`;
-        return `<div class="training-category"><h3>${category.name}</h3>
-          <div class="training-category-progress">${count}/${category.required} TRAINED ${count === category.required ? "· AUTOMATED" : ""}</div>
-          <div class="training-rate">+$${income.toFixed(2)}/sec</div>
-          ${action}</div>`;
-      }).join("")}</div>${this.renderRacingCard(region, ride, packages, profile)}`;
+        </div>
+      </div>
+    </div>`;
+  }
+
+  private renderRegionJobs(region: RideOfferBoard["regions"][number], offers: RideOfferBoard, ride: RideManager,
+    packages: AmbulanceDriverManager, player: PlayerCar, profile: PlayerProfile): string {
+    const selected = this.trainingCategoryId ?? "taxi";
+    const tabs = TRAINING_CATEGORIES.map(category => {
+      const owned = profile.ownsMissionLicense(category.id);
+      const count = profile.getTrainingCount(region.id, category.id);
+      return `<button type="button" role="tab" aria-selected="${selected === category.id}" data-training-category="${category.id}" class="${selected === category.id ? "active" : ""}">
+        ${category.id === "taxi" ? "Taxi" : "Ambulance"}<span>${owned ? `${count}/${category.required}${count === category.required ? " ✓" : ""}` : `🔒 ${this.wholeMoney(getMissionLicense(category.id)!.unlockCost)}`}</span></button>`;
+    }).join("");
+    const header = `<div class="region-panel-heading"><h3>${region.label}</h3><span>${this.phoneLive(`$${profile.getRegionPassiveIncomePerSecond(region.id).toFixed(2)}/sec`)}</span></div>
+      <div class="region-activity-tabs" role="tablist" aria-label="Activities">${tabs}<button type="button" role="tab" aria-selected="${selected === "race"}" data-training-category="race" class="${selected === "race" ? "active" : ""}">Race<span>${profile.ownsRacingLicense ? `×${profile.getRaceMultiplier(region.id).toFixed(2)}` : "🔒"}</span></button></div>`;
+    if (selected === "race") return header + this.renderRacingCard(region, ride, packages, profile);
+    const category = getMissionLicense(selected)!;
+    if (!profile.ownsMissionLicense(selected)) return header + `<div class="inline-license"><strong>Ambulance license</strong>
+      <button type="button" data-purchase-license="${selected}" ${profile.money < category.unlockCost ? "disabled" : ""}>Unlock License (${this.wholeMoney(category.unlockCost)})</button></div>`;
+    return header + (category.activityType === "ambulanceDriver"
+      ? this.renderAmbulanceDriverTab(packages, ride, player, profile, category, region.id)
+      : this.renderMissionTab(offers, ride, packages, player, profile, category, region.id));
   }
 
   private renderRacingCard(
@@ -1356,6 +1422,21 @@ export class GameUI {
 
   private updateMapMarkers(markers: MapMarkers, ride: RideManager, ambulanceDriver: AmbulanceDriverManager,
     player: PlayerCar, town: Town): void {
+    const rewardRegion = this.highlightSeconds > 0
+      ? this.trainingMapRegions?.find(region => region.id === this.highlightedRegionId) : undefined;
+    // The world map may be used before the phone has been opened.
+    const rewardId = this.highlightSeconds > 0 ? this.highlightedRegionId : undefined;
+    setVisible(markers.reward, Boolean(rewardId));
+    if (rewardId) {
+      const [, bx, bz] = rewardId.split("-").map(Number);
+      const x = rewardRegion?.x ?? (town.roadPositionsX[bx] + town.roadPositionsX[bx + 1]) / 2;
+      const z = rewardRegion?.z ?? (town.roadPositionsZ[bz] + town.roadPositionsZ[bz + 1]) / 2;
+      const point = projectMapPoint(x, z, town);
+      setStyle(markers.reward, "left", `${point.x}%`);
+      setStyle(markers.reward, "top", `${point.y}%`);
+      setStyle(markers.reward, "width", `${projectMapWidth(town.roadPositionsX[bx + 1] - town.roadPositionsX[bx] - GAME_CONFIG.world.roadWidth, town)}%`);
+      setStyle(markers.reward, "height", `${projectMapHeight(town.roadPositionsZ[bz + 1] - town.roadPositionsZ[bz] - GAME_CONFIG.world.roadWidth, town)}%`);
+    }
     const playerPoint = projectMapPoint(player.root.position.x, player.root.position.z, town);
     setStyle(markers.player, "left", `${playerPoint.x}%`);
     setStyle(markers.player, "top", `${playerPoint.y}%`);
@@ -1380,6 +1461,7 @@ export class GameUI {
     return { player,
       pickup: root.querySelector(`[data-map="${prefix}pickup"]`)!,
       dropoff: root.querySelector(`[data-map="${prefix}dropoff"]`)!,
+      reward: root.querySelector(`[data-map="${prefix}reward"]`)!,
     };
   }
 
@@ -1404,20 +1486,25 @@ export class GameUI {
     }).join("");
     const gasMarkers = town.gasStations.map((station) => {
       const point = projectMapPoint(station.position.x, station.position.z, town);
-      return `<div class="map-marker gas" style="left:${point.x}%;top:${point.y}%" role="img" aria-label="Gas station" title="Gas station">G</div>`;
+      return `<div class="map-marker gas" style="left:${point.x}%;top:${point.y}%" role="img" aria-label="Gas station" title="Gas station"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4h10v17M3 21h14M7 7h6v5H7zM15 10h2l3 3v5a1 1 0 0 0 2 0V9l-4-4"/></svg></div>`;
     }).join("");
     const repairMarkers = town.autoBodyShops.map((shop) => {
       const point = projectMapPoint(shop.position.x, shop.position.z, town);
-      return `<div class="map-marker repair" style="left:${point.x}%;top:${point.y}%" role="img" aria-label="Auto repair" title="Auto repair">A</div>`;
+      return `<div class="map-marker repair" style="left:${point.x}%;top:${point.y}%" role="img" aria-label="Repair shop" title="Repair shop"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4a6 6 0 0 0-7 8L3 17a3 3 0 0 0 4 4l5-5a6 6 0 0 0 8-7l-4 3-4-4z"/></svg></div>`;
+    }).join("");
+    const dealerMarkers = town.dealerships.map(dealer => {
+      const point = projectMapPoint(dealer.position.x, dealer.position.z, town);
+      return `<div class="map-marker dealership" style="left:${point.x}%;top:${point.y}%" role="img" aria-label="Car dealership" title="Car dealership"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13l3-7h12l3 7v7H3zM3 13h18M6 20v2m12-2v2M6 16h2m8 0h2"/></svg></div>`;
     }).join("");
     // Scale with the road so marker edges stay on the actual curb side even in a narrow map.
     const objectiveMarkerWidth = projectMapWidth(GAME_CONFIG.world.roadWidth * 0.5, town);
     const objectiveMarkerHeight = projectMapHeight(GAME_CONFIG.world.roadWidth * 0.5, town);
 
     return `<div class="map-canvas" style="--map-road-color:${CITY_STYLE.palette.road};aspect-ratio:${town.maxX - town.minX}/${town.maxZ - town.minZ};--objective-marker-width:${objectiveMarkerWidth}%;--objective-marker-height:${objectiveMarkerHeight}%;--mission-marker-width:${projectMapWidth(130, town)}%;--mission-marker-height:${projectMapHeight(130, town)}%;--service-marker-width:${projectMapWidth(140, town)}%;--service-marker-height:${projectMapHeight(140, town)}%">
-          ${roads}${gasMarkers}${repairMarkers}${missions}
+          ${roads}${gasMarkers}${repairMarkers}${dealerMarkers}${missions}
           <div class="map-marker pickup hidden" data-map="${prefix}pickup" role="img" aria-label="Pickup" title="Pickup"></div>
           <div class="map-marker dropoff hidden" data-map="${prefix}dropoff" role="img" aria-label="Dropoff" title="Dropoff"></div>
+          <div class="map-training-reward hidden" data-map="${prefix}reward" aria-hidden="true"></div>
           <div class="map-player" data-map="${prefix}player">▲</div>
         </div>`;
   }
@@ -1452,7 +1539,7 @@ export class GameUI {
         <div class="ride-details">
           ${this.offerMetric("PICKUP", `${Math.round(offer.pickupDistance)} m`)}
           ${this.offerMetric("TRIP", `${Math.round(offer.tripDistance)} m`)}
-          ${this.offerMetric("BASE FARE", this.money(offer.baseFare))}
+          ${this.offerMetric("FARE", this.money(offer.baseFare))}
         </div>
       </div>
     `;
@@ -1558,6 +1645,39 @@ export class GameUI {
     setText(this.indicatorDistance,`${distance}m`);
   }
 
+  private updateTrainingFeedback(ride: RideManager, ambulance: AmbulanceDriverManager, deltaTime: number): void {
+    this.highlightSeconds = Math.max(0, this.highlightSeconds - deltaTime);
+    const reward = ambulance.resultTimeRemaining > 0 ? ambulance.lastTrainingReward
+      : ride.resultTimeRemaining > 0 ? ride.lastTrainingReward : null;
+    if (reward && reward !== this.lastSeenReward) {
+      this.lastSeenReward = reward;
+      this.lastWorkedRegionId = reward.regionId;
+      this.suggestionKey = "";
+      if (GAME_CONFIG.presentation.progressionFeedback) {
+        this.highlightedRegionId = reward.regionId;
+        this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
+        this.lastPhoneHtml = "";
+      }
+    }
+    setClass(this.aiIncomeValue, "income-reward", this.highlightSeconds > 0 && GAME_CONFIG.presentation.progressionFeedback);
+  }
+
+  private trainingRewardHtml(reward: TrainingReward | null): string {
+    if (!reward || !GAME_CONFIG.presentation.progressionFeedback) return "";
+    if (this.rewardHtmlReceipt === reward) return this.rewardHtmlCache;
+    this.rewardHtmlReceipt = reward;
+    const gain = Math.round((reward.incomeAfter - reward.incomeBefore) * 1_000_000) / 1_000_000;
+    const label = reward.categoryId === "taxi" ? "Taxi" : "Ambulance";
+    const complete = reward.after === reward.required;
+    const amount = gain.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    this.rewardHtmlCache = `<div class="training-reward" role="status" style="--progress-from:${reward.before / reward.required};--progress-to:${reward.after / reward.required};--progress-duration:${GAME_CONFIG.presentation.progressAnimationMs}ms">
+      <div class="training-reward-label">${label} · Region ${this.regionNumber(reward.regionId)} <span>${reward.before}/${reward.required} → ${reward.after}/${reward.required}</span></div>
+      <div class="training-reward-track"><span></span></div>
+      <div class="training-reward-income">${gain > 0 ? `<strong>AI income +$${amount}/sec</strong>` : ""}${complete ? '<span class="automated-badge">Automated ✓</span>' : ""}</div>
+    </div>`;
+    return this.rewardHtmlCache;
+  }
+
   private renderActivityResult(ride: RideManager, ambulanceDriver: AmbulanceDriverManager): void {
     if (this.raceSnapshot && this.raceSnapshot.state !== "IDLE") {
       setVisible(this.rideResult, false);
@@ -1570,9 +1690,8 @@ export class GameUI {
       setVisible(this.rideResult,true);
       this.setHtml(this.rideResult, "lastRideResultHtml", `
         <div class="ride-result-title">PATIENT DELIVERED</div>
-        <div>${Math.round(result.tripDistance)} m to clinic in ${this.duration(result.durationSeconds)}</div>
-        <div>Starting Payout ${this.money(result.initialPayout)}</div>
-        <div>Total ${this.money(result.payout)}</div>
+        <div class="patient-payout">${this.money(result.payout)}</div>
+        ${this.trainingRewardHtml(ambulanceDriver.lastTrainingReward)}
       `);
       return;
     }
@@ -1591,6 +1710,7 @@ export class GameUI {
         <span>BASE FARE</span><strong>${this.money(result.baseFare)}</strong>
         <span>TIP</span><strong>${this.money(result.tip)}</strong>
       </div>
+      ${this.trainingRewardHtml(ride.lastTrainingReward)}
     `);
   }
 
@@ -1613,10 +1733,10 @@ export class GameUI {
     }
     const improved = result.previousBest === null || result.bestFinish < result.previousBest;
     const previous = result.previousBest === null ? "UNRANKED" : `${this.ordinal(result.previousBest)} PLACE`;
-    const html = `<div class="race-result-panel">
+    const html = `<div class="race-result-panel ${improved && GAME_CONFIG.presentation.progressionFeedback ? "race-improved" : ""}">
       <div class="race-result-eyebrow">RACE COMPLETE</div><h2>REGION ${this.regionNumber(result.regionId)}</h2>
       <div class="race-finish-label">FINISH</div><div class="race-finish">${this.ordinal(result.finishPlace)} / ${GAME_CONFIG.racing.aiCount + 1}</div>
-      <div class="race-result-grid"><div><span>PREVIOUS BEST</span><strong>${previous}</strong></div><div><span>${improved ? "NEW REGIONAL MULTIPLIER" : "BEST RESULT REMAINS"}</span><strong>×${result.multiplier.toFixed(2)}</strong></div><div><span>REGIONAL AI INCOME</span><strong>$${result.incomeBefore.toFixed(2)} → $${result.incomeAfter.toFixed(2)}/sec</strong></div></div>
+      <div class="race-result-grid"><div><span>PREVIOUS BEST</span><strong>${previous}</strong></div><div><span>${improved ? "NEW REGIONAL MULTIPLIER" : "BEST RESULT REMAINS"}</span><strong>×${result.multiplier.toFixed(2)}</strong></div><div class="race-income-result"><span>REGIONAL AI INCOME</span><strong>$${result.incomeBefore.toFixed(2)} → $${result.incomeAfter.toFixed(2)}/sec</strong></div></div>
       <div class="race-result-actions"><button type="button" data-race-retry ${this.raceCanRetry ? "" : "disabled"}>${this.raceCanRetry ? "RETRY" : "REFUEL TO RETRY"}</button><button type="button" data-race-continue>CONTINUE</button></div>
     </div>`;
     if (html !== this.lastRaceResultHtml) {
@@ -1772,7 +1892,32 @@ export class GameUI {
       return;
     }
     this[cacheKey] = html;
-    element.innerHTML = html;
+    if (cacheKey === "lastPhoneHtml") {
+      const template = document.createElement("template");
+      template.innerHTML = html;
+      const sameWorkspace = element.querySelector(".training-workspace") && template.content.querySelector(".training-workspace");
+      const focused = document.activeElement as HTMLElement | null;
+      const focusCategory = focused?.dataset.trainingCategory ?? focused?.dataset.purchaseLicense;
+      const focusRegion = focused?.dataset.trainingRegion;
+      if (sameWorkspace) {
+        for (const section of template.content.querySelectorAll<HTMLElement>("[data-phone-section]")) {
+          const key = section.dataset.phoneSection!;
+          const target = element.querySelector<HTMLElement>(`[data-phone-section="${key}"]`);
+          if (target && this.phoneSectionHtml.get(key) !== section.innerHTML) target.innerHTML = section.innerHTML;
+          this.phoneSectionHtml.set(key, section.innerHTML);
+        }
+      } else {
+        element.replaceChildren(template.content);
+        this.phoneSectionHtml.clear();
+        for (const section of element.querySelectorAll<HTMLElement>("[data-phone-section]")) {
+          this.phoneSectionHtml.set(section.dataset.phoneSection!, section.innerHTML);
+        }
+      }
+      if (focused && !focused.isConnected && (focusCategory || focusRegion)) {
+        element.querySelector<HTMLElement>(focusCategory
+          ? `[data-training-category="${focusCategory}"]` : `[data-training-region="${focusRegion}"]`)?.focus({ preventScroll: true });
+      }
+    } else element.innerHTML = html;
     if (cacheKey === "lastPhoneHtml") this.phoneMapMarkers = this.readMapMarkers(element, "training-");
     if (cacheKey === "lastPhoneHtml") this.phoneLiveNodes = [...element.querySelectorAll<HTMLElement>("[data-phone-live]")].sort((a, b) => Number(a.dataset.phoneLive) - Number(b.dataset.phoneLive));
   }

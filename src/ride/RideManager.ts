@@ -1,3 +1,4 @@
+import type { TrainingReward } from "../training/Training";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
@@ -26,6 +27,7 @@ export class RideManager {
   activeRide: RideOffer | null = null;
   satisfaction: number = GAME_CONFIG.ride.satisfaction.startingScore;
   lastResult: RideResult | null = null;
+  lastTrainingReward: TrainingReward | null = null;
   resultTimeRemaining = 0;
   collisionFlashText = "";
   collisionFlashSeconds = 0;
@@ -425,9 +427,9 @@ export class RideManager {
       total,
     };
     const training = this.activeRide.training;
-    this.profile.completeRide(result, training);
+    this.lastTrainingReward = this.profile.completeRide(result, training);
     this.lastResult = result;
-    this.resultTimeRemaining = GAME_CONFIG.ride.rideResultSeconds;
+    this.resultTimeRemaining = GAME_CONFIG.presentation.resultSeconds;
     this.marker?.setEnabled(false);
     this.activeRide = null;
     this.state = RideState.Idle;

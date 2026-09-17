@@ -104,7 +104,8 @@ describe("passenger mechanics", () => {
 
   it("activates the mechanic trade only on actual repair, even with no money", () => {
     const f = fixture(PassengerType.Mechanic), damage = new DamageManager();
-    const shops = [{ position: Vector3.Zero(), radius: 16 }];
+    const shops = [{ position: Vector3.Zero(), bayDirection: 1 as const,
+      serviceArea: { x: 0, z: 0, halfX: 15, halfZ: 18 } }];
     f.profile.money = 0;
     damage.update(1, f.player, shops, f.profile, true, true);
     f.ride.registerMechanicRepair(damage.lastRepairAmount);

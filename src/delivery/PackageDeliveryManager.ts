@@ -1,5 +1,5 @@
 import { PackageOfferBoard } from "./PackageOfferBoard";
-import type { TrainingContext, TrainingRegion } from "../training/Training";
+import type { TrainingReward, TrainingContext, TrainingRegion } from "../training/Training";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import type { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -43,6 +43,7 @@ export class PackageDeliveryManager {
   activeOffer: PackageDeliveryOffer | null = null;
   elapsedSeconds = 0;
   lastResult: PackageDeliveryResult | null = null;
+  lastTrainingReward: TrainingReward | null = null;
   resultTimeRemaining = 0;
   private marker: Mesh | null = null;
   private markerMaterial: StandardMaterial | null = null;
@@ -82,6 +83,7 @@ export class PackageDeliveryManager {
     this.state = PackageDeliveryState.DrivingToPickup;
     this.elapsedSeconds = 0;
     this.lastResult = null;
+    this.lastTrainingReward = null;
     this.resultTimeRemaining = 0;
     this.showMarker(offer.pickupPoint.position, new Color3(1, 0.62, 0.12), "ambulance-pickup-marker");
     return true;
@@ -145,8 +147,8 @@ export class PackageDeliveryManager {
       tripDistance: this.activeOffer.tripDistance,
       durationSeconds: this.elapsedSeconds,
     };
-    this.profile.completeAmbulanceJob(payout, this.activeOffer.training);
-    this.resultTimeRemaining = GAME_CONFIG.ambulanceDriver.resultSeconds;
+    this.lastTrainingReward = this.profile.completeAmbulanceJob(payout, this.activeOffer.training);
+    this.resultTimeRemaining = GAME_CONFIG.presentation.resultSeconds;
     this.finishActivity();
   }
 

@@ -1,3 +1,4 @@
+import { WORLD_SURFACES } from "./SurfaceLayout";
 import type { BoxCollider } from "../game/types";
 import { CITY_STYLE, CityGeometry, type BuildingLot } from "./CityStyle";
 
@@ -75,19 +76,19 @@ export function addPavementDetails(
         }
         // Gutter is a flat color strip, not a new obstacle or simulated drainage system.
         groundLine(geometry, point(start, -rules.curbWidth/2-rules.gutterWidth/2),
-          point(end, -rules.curbWidth/2-rules.gutterWidth/2), rules.gutterWidth, colors.gutter, .14);
+          point(end, -rules.curbWidth/2-rules.gutterWidth/2), rules.gutterWidth, colors.gutter, WORLD_SURFACES.gutter);
         for (let along = Math.ceil(start / rules.curbJointSpacing) * rules.curbJointSpacing;
           along < end; along += rules.curbJointSpacing) {
           groundLine(geometry, point(along, -rules.curbWidth/2), point(along, rules.curbWidth/2),
-            .055, colors.seam, rules.curbHeight+.008);
+            .055, colors.seam, rules.curbHeight+CITY_STYLE.facades.surfaceStep);
         }
         // One small grate on selected block edges, kept inside a continuous curb segment.
         if ((seed + side) % 3 === 0 && end-start > 30) {
           const along = start+(end-start)*.55, inward = -rules.curbWidth/2-rules.gutterWidth/2;
-          groundLine(geometry, point(along-.8,inward),point(along+.8,inward), .5, colors.roof, .15);
+          groundLine(geometry, point(along-.8,inward),point(along+.8,inward), .5, colors.roof, WORLD_SURFACES.grate);
           for (let bar=0;bar<4;bar++) {
             const u=along-.6+bar*.4;
-            groundLine(geometry,point(u,inward-.2),point(u,inward+.2),.09,colors.gutter,.16);
+            groundLine(geometry,point(u,inward-.2),point(u,inward+.2),.09,colors.gutter,WORLD_SURFACES.grateBars);
           }
         }
       }
@@ -101,7 +102,7 @@ export function addPavementDetails(
   return footprints;
 }
 
-function groundLine(g: CityGeometry, a: [number, number], b: [number, number], width: number, color: string, y = .22): void {
+function groundLine(g: CityGeometry, a: [number, number], b: [number, number], width: number, color: string, y: number = WORLD_SURFACES.pavementDetail): void {
   const dx = b[0] - a[0], dz = b[1] - a[1], scale = width / (2 * Math.hypot(dx, dz));
   const px = -dz * scale, pz = dx * scale;
   g.face([[a[0]+px,y,a[1]+pz],[a[0]-px,y,a[1]-pz],
@@ -120,7 +121,7 @@ export function addStreetSign(g: CityGeometry, x: number, z: number, avenue: num
     for (let r = 0; r < 5; r++) for (let c = 0; c < 3; c++) {
       if (glyphs[letter][r * 3 + c] !== "1") continue;
       const a = x + side * (-1.3 + letter * .95 + c * .2), b = a + side * .2;
-      const y = 7 - r * .2, front = z - side * .125;
+      const y = 7 - r * .2, front = z - side * (.11 + CITY_STYLE.facades.surfaceStep);
       g.face([[a,y-.2,front],[b,y-.2,front],[b,y,front],[a,y,front]], p.trim);
     }
   }

@@ -1,3 +1,4 @@
+import { isInServiceArea } from "../world/ServiceAreas";
 import { createTrainingRegions, TrainingIncomeClock } from "../training/Training";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { hasEnhancedGraphics, resolveGraphicsMode, setSceneGraphicsMode } from "../graphics/GraphicsMode";
@@ -103,6 +104,7 @@ export class Game {
       continueRace: () => this.endRace(false),
       abortRace: () => this.endRace(true),
       openVehicleShop: () => this.openVehicleShop(),
+      canUseVehicleShop: () => this.canUseVehicleShop(),
       debugUnlockRacing: () => this.profile?.debugUnlockRacing(),
       debugResetRaceFinish: (regionId: string) => this.profile?.debugResetRaceFinish(regionId),
     });
@@ -473,7 +475,7 @@ export class Game {
 
   private purchaseVehicle(id: string): string {
     if (!this.profile || !this.player) return "GARAGE UNAVAILABLE";
-    if (!this.canUseVehicleShop()) return "STOP AT AN AUTO SHOP WITHOUT AN ACTIVE JOB";
+    if (!this.canUseVehicleShop()) return "STOP AT A DEALERSHIP WITHOUT AN ACTIVE JOB";
     if (this.ambulanceDriver?.isActive) return "FINISH AMBULANCE JOB FIRST";
     const vehicle = getVehicleDefinition(id);
     if (!vehicle) return "VEHICLE NOT FOUND";
@@ -491,7 +493,7 @@ export class Game {
 
   private equipVehicle(id: string): string {
     if (!this.profile || !this.player) return "GARAGE UNAVAILABLE";
-    if (!this.canUseVehicleShop()) return "STOP AT AN AUTO SHOP WITHOUT AN ACTIVE JOB";
+    if (!this.canUseVehicleShop()) return "STOP AT A DEALERSHIP WITHOUT AN ACTIVE JOB";
     if (this.ambulanceDriver?.isActive) return "FINISH AMBULANCE JOB FIRST";
     const vehicle = getVehicleDefinition(id);
     if (!vehicle || !this.profile.ownsVehicle(id)) return "VEHICLE NOT OWNED";
@@ -548,8 +550,7 @@ export class Game {
     return this.state === GameState.Playing && !!this.player && !!this.town
       && !this.activity?.hasActiveActivity && !this.police?.isPursuitActive
       && this.player.getSpeedMph() <= GAME_CONFIG.progression.equipMaxSpeedMph
-      && this.town.autoBodyShops.some(shop => Math.hypot(shop.position.x - this.player!.root.position.x,
-        shop.position.z - this.player!.root.position.z) <= shop.radius);
+      && this.town.dealerships.some(dealer => isInServiceArea(this.player!.root.position, dealer.serviceArea));
   }
 
   private openVehicleShop(): boolean {

@@ -1,4 +1,28 @@
 export const GAME_CONFIG = {
+  presentation: {
+    // Keep the roof behind the open pump lane, including the chase camera's reach.
+    gasStation: {
+      canopySetback: 42,
+      canopyDepth: 16,
+      pumpSpacing: 20,
+      pumpSetback: 7,
+    },
+    // These controls change guidance and feedback without changing the economy.
+    progressionFeedback: true,
+    recommendations: true,
+    resultSeconds: 4,
+    progressAnimationMs: 600,
+    regionHighlightSeconds: 1.2,
+    // Prefer the last worked region only when its pickup is this close to the nearest alternative.
+    recommendationDistanceRatio: 1.5,
+    serviceSigns: {
+      gasHeight: 4.5, repairHeight: 3, repairWidth: 24,
+      // Increase separation to prevent backing surfaces flickering through lettering at grazing angles.
+      surfaceGap: 0.75,
+      // Billboard center height; 33.6 is 20% higher than the former gas sign.
+      billboardHeight: 33.6,
+    },
+  },
   simulation: {
     // Smaller steps make physics more stable but cost more CPU; larger steps are cheaper but feel less consistent.
     fixedStepSeconds: 1 / 60,
@@ -195,6 +219,8 @@ export const GAME_CONFIG = {
     pedalReturnRate: 8,
   },
   camera: {
+    // Larger near planes improve distant depth precision; keep well below the chase distance.
+    nearClip: 1,
     // Camera distances and look-ahead are in world units. FOV values are radians.
     // Increase to move the camera farther behind the car; decrease for a closer, more responsive view.
     distance: 15,
@@ -585,8 +611,10 @@ export const GAME_CONFIG = {
   },
   repair: {
     shopCount: 6,
-    // Increase to repair from farther away; decrease to require being closer to the shop.
-    repairRadius: 16,
+    // Sets both the visible red forecourt width and its interaction area.
+    forecourtHalfWidth: 15,
+    // Extends the red forecourt from the bay toward the street.
+    forecourtFrontDepth: 15,
     // Increase repair speed; decrease for slower repairs.
     repairRatePerSecond: 0.2,
     // Increase the full repair price; decrease it for cheaper repairs.
@@ -597,6 +625,15 @@ export const GAME_CONFIG = {
     damageScaleSpeedMph: 60,
     // Increase the maximum damage per collision; decrease for gentler collision damage.
     maxCollisionDamage: 0.26,
+  },
+  dealership: {
+    // Number of standalone vehicle shops to distribute across the city.
+    count: 3,
+    // Increase for a wider display lot; the same bounds control shop access.
+    lotWidth: 54,
+    lotDepth: 44,
+    // Prefer widely separated dealerships without using highway roads.
+    minimumSpacing: 600,
   },
   ambulanceDriver: {
     // Change this to change the repeatable sequence of generated patient calls.
@@ -615,8 +652,6 @@ export const GAME_CONFIG = {
     pickupRadius: 20,
     // Increase to make clinic unloading easier; decrease for more precise stopping.
     dropoffRadius: 20,
-    // Increase how long the delivery result remains visible; decrease it to dismiss sooner.
-    resultSeconds: 3,
   },
   ride: {
     // Increase the number of offers shown at once; decrease for a smaller offer list.
@@ -658,8 +693,6 @@ export const GAME_CONFIG = {
     destinationRadius: 20,
     // Increase the allowed arrival speed; decrease it to demand a slower stop.
     maximumArrivalSpeedMph: 5,
-    // Increase how long the completed-ride result remains visible; decrease it to dismiss sooner.
-    rideResultSeconds: 3,
     fare: {
       // Increase the base fare paid on every ride; decrease it for lower starting pay.
       baseFare: 10,

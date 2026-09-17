@@ -17,7 +17,7 @@ export class ChaseCamera {
 
   constructor(scene: Scene, private readonly player: PlayerCar) {
     this.camera = new UniversalCamera("chase-camera", new Vector3(0, 35, -35), scene);
-    this.camera.minZ = 0.1;
+    this.camera.minZ = this.config.nearClip;
     this.camera.maxZ = 2200;
     this.camera.fov = 0.82;
     this.target.copyFrom(player.root.position);

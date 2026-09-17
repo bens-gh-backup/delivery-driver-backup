@@ -23,7 +23,15 @@ export interface GasStation {
 
 export interface AutoBodyShop {
   position: Vector3;
-  radius: number;
+  serviceArea: BoxCollider;
+  bayDirection: -1 | 1;
+}
+
+export interface Dealership {
+  position: Vector3;
+  serviceArea: BoxCollider;
+  roadAxis: RoadAxis;
+  roadSide: -1 | 1;
 }
 
 export interface Clinic {

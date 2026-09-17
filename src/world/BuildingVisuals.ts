@@ -1,3 +1,4 @@
+import { WORLD_SURFACES } from "./SurfaceLayout";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Scene } from "@babylonjs/core/scene";
@@ -14,6 +15,7 @@ export function createNoirBuilding(
   landmark = false, facing = 0, cornerSide: number | null = null, streetFrontage = true,
 ): Mesh[] {
   const seed = visualSeed(name), p = CITY_STYLE.palette, rules = CITY_STYLE.facades;
+  const layer = rules.surfaceStep;
   const palette = district === "downtown" ? p.downtown : p.residential;
   const wall = palette[seed % palette.length], g = new CityGeometry();
   if (facing % 2 !== 0) [width, depth] = [depth, width];
@@ -65,7 +67,7 @@ export function createNoirBuilding(
         for (let col = 0; col < columns; col++) {
           const center = -span / 2 + (col + .5) * bay;
           if (!commercial && side === 0 && row === 0 && Math.abs(center) < half + 1.6) continue;
-          panel(side, center-half, center+half, y, y+rules.windowHeight, .085, p.window, w, d);
+          panel(side, center-half, center+half, y, y+rules.windowHeight, layer, p.window, w, d);
           if (detailed) ledge(side, center-half-.3, center+half+.3, y, rules.sillProjection, .3, p.trim, w, d);
         }
       }
@@ -94,7 +96,7 @@ export function createNoirBuilding(
   // A continuous masonry base grounds the building without additional collision geometry.
   for (let side = 0; side < 4; side++) {
     const span = side % 2 === 0 ? width : depth;
-    panel(side, -span/2, span/2, .12, commercial ? rules.shopHeight : .65, .02, p.buildingBase);
+    panel(side, -span/2, span/2, .12, commercial ? rules.shopHeight : .65, layer, p.buildingBase);
   }
   if (commercial) {
     belt(rules.shopHeight, width, depth, .5, .4);
@@ -103,10 +105,10 @@ export function createNoirBuilding(
       const columns = facadeColumnCount(span), bay = span / columns;
       for (let col = 0; col < columns; col++) {
         const center = -span/2+(col+.5)*bay, half = bay*.38;
-        panel(side, center-half-.12, center+half+.12, .35, rules.shopHeight-.8, .06, p.trim);
-        panel(side, center-half, center+half, .55, rules.shopHeight-1, .09, p.window);
+        panel(side, center-half-.12, center+half+.12, .35, rules.shopHeight-.8, layer * 2, p.trim);
+        panel(side, center-half, center+half, .55, rules.shopHeight-1, layer * 3, p.window);
         // One narrow mullion is enough to read as shop glazing from the driving camera.
-        panel(side, center-.09, center+.09, .55, rules.shopHeight-1, .12, p.windowFrame);
+        panel(side, center-.09, center+.09, .55, rules.shopHeight-1, layer * 4, p.windowFrame);
         if (seed % 3 !== 1) {
           const awningY = rules.shopHeight-.45, outerY = awningY-.65;
           for (let stripe = 0; stripe < 4; stripe++) {
@@ -120,16 +122,16 @@ export function createNoirBuilding(
       }
     }
   } else {
-    g.face([[-width/2-3,.16,-depth/2-3],[width/2+3,.16,-depth/2-3],
-      [width/2+3,.16,depth/2+3],[-width/2-3,.16,depth/2+3]],p.lawn);
-    g.face([[-1.6,.18,-depth/2-7],[1.6,.18,-depth/2-7],
-      [1.6,.18,-depth/2],[-1.6,.18,-depth/2]],p.path);
+    g.face([[-width/2-3,WORLD_SURFACES.garden,-depth/2-3],[width/2+3,WORLD_SURFACES.garden,-depth/2-3],
+      [width/2+3,WORLD_SURFACES.garden,depth/2+3],[-width/2-3,WORLD_SURFACES.garden,depth/2+3]],p.lawn);
+    g.face([[-1.6,WORLD_SURFACES.path,-depth/2-7],[1.6,WORLD_SURFACES.path,-depth/2-7],
+      [1.6,WORLD_SURFACES.path,-depth/2],[-1.6,WORLD_SURFACES.path,-depth/2]],p.path);
     if(seed%3===0) g.box(width*.32,height-.6,depth*.2,1.8,3,2,p.roof);
   }
   // Keep the existing central entrance clear, including on corner storefronts.
-  panel(0,-1.45,1.45,.18,3.55,.15,p.trim);
-  panel(0,-1.18,1.18,.2,3.3,.18,p.window);
-  panel(0,.72,.86,1.35,1.65,.2,p.trim);
+  panel(0,-1.45,1.45,.18,3.55,layer * 5,p.trim);
+  panel(0,-1.18,1.18,.2,3.3,layer * 6,p.window);
+  panel(0,.72,.86,1.35,1.65,layer * 7,p.trim);
   if (!commercial) ledge(0,-2,2,3.8,.9,.25,p.trim);
   const mesh=g.mesh(scene,name,material,x,z);
   mesh.rotation.y=facing*Math.PI/2;
@@ -138,7 +140,7 @@ export function createNoirBuilding(
   if (district === "downtown" && (landmark || seed%13===0)) {
     const sign = new CityGeometry();
     const color=p.neon[seed%2],sx=landmark?width*.35:0,sy=landmark?height*.45:5;
-    sign.box(sx,sy,-depth/2-.3,landmark?1.8:6.5,landmark?11:2,.5,p.window);
+    sign.box(sx,sy,-depth/2-.9,landmark?1.8:6.5,landmark?11:2,.5,p.window);
     // Small vector lettering shares the sign mesh: no text textures or extra draw calls.
     const glyphs: Record<string,string[]> = {
       C:["111","100","100","100","111"], A:["010","101","111","101","101"],
@@ -155,8 +157,8 @@ export function createNoirBuilding(
           if(row[c]!=="1")continue;
           const start=c;while(c+1<row.length&&row[c+1]==="1")c++;
           const a=left+start*pixel,b=left+(c+1)*pixel,y=top-r*pixel;
-          sign.face([[a,y-pixel,-depth/2-.56],[b,y-pixel,-depth/2-.56],
-            [b,y,-depth/2-.56],[a,y,-depth/2-.56]],color);
+          sign.face([[a,y-pixel,-depth/2-1.15-layer],[b,y-pixel,-depth/2-1.15-layer],
+            [b,y,-depth/2-1.15-layer],[a,y,-depth/2-1.15-layer]],color);
         }
       });
     }

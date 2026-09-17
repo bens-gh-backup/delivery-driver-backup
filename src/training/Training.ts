@@ -19,6 +19,15 @@ export const TRAINING_CATEGORIES = [
 export const TRAINING_JOBS_PER_REGION = TRAINING_CATEGORIES.reduce((sum, category) => sum + category.required, 0);
 export type TrainingCategoryId = typeof TRAINING_CATEGORIES[number]["id"];
 export interface TrainingContext { readonly regionId: string; readonly categoryId: TrainingCategoryId; }
+/** Transient receipt, derived at the moment a job is credited; never persisted. */
+export interface TrainingReward extends TrainingContext {
+  readonly before: number;
+  readonly after: number;
+  readonly required: number;
+  readonly incomeBefore: number;
+  readonly incomeAfter: number;
+}
+
 export type RegionProgress = Partial<Record<TrainingCategoryId, number>>;
 export type TrainingProgress = Record<string, RegionProgress>;
 export interface TrainingRegion {
