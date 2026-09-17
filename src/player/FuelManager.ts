@@ -1,6 +1,6 @@
 import { GAME_CONFIG } from "../game/config";
 import type { GasStation } from "../game/types";
-import { clamp, distanceXZ } from "../utils/math";
+import { clamp } from "../utils/math";
 import type { PlayerCar } from "./PlayerCar";
 import type { PlayerProfile } from "./PlayerProfile";
 
@@ -49,9 +49,12 @@ export class FuelManager {
   }
 
   private checkNearGasStation(player: PlayerCar, gasStations: GasStation[]): boolean {
+    const position = player.root.position;
     for (const station of gasStations) {
-      if (distanceXZ(player.root.position, station.position) <= station.radius) {
-        return true;
+      const radiusSquared = station.radius * station.radius;
+      for (const pump of station.pumpPositions) {
+        const dx = position.x - pump.x, dz = position.z - pump.z;
+        if (dx * dx + dz * dz <= radiusSquared) return true;
       }
     }
     return false;

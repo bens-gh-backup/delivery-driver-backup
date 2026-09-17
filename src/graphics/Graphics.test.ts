@@ -121,6 +121,40 @@ describe("enhanced graphics",()=>{
     expect(counts).toEqual({downtown:9,park:4,residential:36});
     expect(CITY_STYLE.districts.downtown.minHeight).toBeGreaterThan(CITY_STYLE.districts.residential.maxHeight);
   });
+  it("removes covered party-wall faces while retaining exposed upper walls",()=>{
+    const {scene,material}=fixture();
+    const [mesh]=createNoirBuilding(scene,"frontage-check",0,0,40,44,50,material,material,"downtown",false,0,null,true,{
+      id:"frontage-check",blockId:"block-3-3",streetSides:[0],coveredHeights:[0,40,0,60],colorSeed:0,
+    });
+    validate(mesh);
+    const positions=mesh.getVerticesData(VertexBuffer.PositionKind)!;
+    const normals=mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    let upperWallVertices=0;
+    for(let i=0;i<positions.length;i+=3){
+      // Local right neighbor ends at 40; the left neighbor hides the entire wall.
+      if(normals[i]>.99 && positions[i]>=20){
+        expect(positions[i+1]).toBeGreaterThanOrEqual(40);
+        upperWallVertices++;
+      }
+      expect(normals[i]<-.99 && positions[i]<=-20).toBe(false);
+    }
+    expect(upperWallVertices).toBeGreaterThan(0);
+  });
+  it("keeps full alley walls and roof trim inside even the smallest downtown gaps",()=>{
+    const {scene,material}=fixture();
+    const [mesh]=createNoirBuilding(scene,"narrow-gap",0,0,40,44,50,material,material,"downtown",false,0,null,true,{
+      id:"narrow-gap",blockId:"block-3-3",streetSides:[0],coveredHeights:[0,0,0,0],colorSeed:0,
+      sideClearances:[Infinity,.5,Infinity,.5],neighborHeights:[0,60,0,60],
+    });
+    validate(mesh);
+    const p=mesh.getVerticesData(VertexBuffer.PositionKind)!,n=mesh.getVerticesData(VertexBuffer.NormalKind)!;
+    let lowSideVertices=0;
+    for(let i=0;i<p.length;i+=3){
+      expect(Math.abs(p[i])).toBeLessThanOrEqual(20+.5/4+.00001);
+      if(Math.abs(n[i])>.99&&p[i+1]<1)lowSideVertices++;
+    }
+    expect(lowSideVertices).toBeGreaterThan(0);
+  });
   it("preserves layout, collision, services and static batching across render modes",()=>{
     const original=fixture("original"),enhanced=fixture("enhanced");
     const a=new TownGenerator(original.scene).generate(),b=new TownGenerator(enhanced.scene).generate();
@@ -141,7 +175,8 @@ describe("enhanced graphics",()=>{
     expect(enhanced.scene.meshes.length).toBe(b.meshes.length);
     // Three shared sign materials, one display-car material and one dealership facade.
     expect(enhanced.scene.materials.length).toBeLessThanOrEqual(25);
-    expect(enhanced.scene.textures).toHaveLength(0);
+    expect(enhanced.scene.textures.map(t=>t.name)).toEqual(["fence-board-pattern"]);
+    expect(enhanced.scene.textures[0].getSize()).toEqual({width:16,height:64});
     expect(b.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThan(GAME_CONFIG.graphics.worldTriangleBudget);
   });
 });

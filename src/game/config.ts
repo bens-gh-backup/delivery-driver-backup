@@ -5,7 +5,11 @@ export const GAME_CONFIG = {
       canopySetback: 42,
       canopyDepth: 16,
       pumpSpacing: 20,
-      pumpSetback: 7,
+      // Setbacks are relative to the station map marker; smaller values move toward the road.
+      pumpSetback: 0,
+      // Place the sign beside the entrance, outside the paved drive-through lanes.
+      signAlongOffset: 46,
+      signSetback: -13,
     },
     // These controls change guidance and feedback without changing the economy.
     progressionFeedback: true,
@@ -79,23 +83,28 @@ export const GAME_CONFIG = {
       gasStationLegalHalfWidth: 52,
     },
     buildings: {
-      // Increase to make building lots larger and reduce their count; decrease to create more, smaller lots.
-      lotTargetSize: 55,
-      // Increase to prevent tiny lots; decrease to allow more lots on smaller blocks.
-      minLotsPerSide: 3,
-      // Increase to pull buildings farther inward from sidewalks; decrease to build closer to the curb.
-      buildableInset: 1,
-      // Increase for buildings that fill more of their lots; decrease for smaller buildings and more open space.
-      minLotCoverage: 0.46,
-      // Increase to allow buildings to fill nearly all of a lot; decrease to cap the largest building footprints.
-      maxLotCoverage: 0.74,
-      // Increase to scatter buildings farther from their regular lot centers; decrease for straighter rows.
-      lotJitter: 0.11,
-      // District height ranges and densities are in world/CityStyle.ts.
-      // Controls the size of the fallback building when a block has no normal buildings; higher fills more of the block.
-      fallbackCoverage: 0.62,
-      // Increase for taller fallback buildings; decrease for shorter fallback buildings.
-      fallbackHeight: 18,
+      // Larger frontage modules mean fewer buildings along each street.
+      frontageWidth: 44,
+      minimumFrontage: 26,
+      // Setbacks are measured inward from the block edge, leaving a clear sidewalk.
+      downtownSetback: 6,
+      residentialSetback: 12,
+      // Downtown wall-to-wall gaps in gameplay meters; seeded so reloads keep the same city.
+      downtownGapMinMeters: .5,
+      downtownGapMaxMeters: 3,
+      // Common frontage depth keeps the roadside row aligned.
+      frontageDepth: 44,
+      houseMinSize: 28,
+      houseMaxSize: 36,
+      // Larger gardens occupy more of the hidden block interior without adding houses.
+      yardDepth: 32,
+      yardTreeChance: .2,
+      fenceHeight: 2.6,
+      fenceThickness: .4,
+      // Board width controls the shared repeating seam pattern, not polygon count.
+      fenceBoardWidth: 1.1,
+      // Keep fence colliders in the spatial index instead of its global oversized list.
+      fenceMaxSpan: 64,
     },
   },
   player: {
@@ -593,7 +602,7 @@ export const GAME_CONFIG = {
     capacitySecondsAtCruise: 500,
     // Increase to show the low-fuel warning earlier; decrease to wait longer.
     lowFuelThreshold: 0.2,
-    // Increase to refuel from farther away; decrease to require being closer.
+    // Distance from either pump, on either side. Increase for more forgiving parking.
     refuelRadius: 16,
     // Increase for faster refueling; decrease for slower refueling.
     refuelRatePerSecond: 0.2,

@@ -126,7 +126,7 @@ describe("passenger mechanics", () => {
 
   it("pays Off-grid once for a stopped full-tank visit with no fuel purchase", () => {
     const f = fixture(PassengerType.OffGrid), fuel = new FuelManager();
-    fuel.update(0, f.player, [{ position: Vector3.Zero(), radius: 16, roadAxis: "northSouth", roadSide: 1 }], f.profile);
+    fuel.update(0, f.player, [{ position: Vector3.Zero(), pumpPositions: [Vector3.Zero()], radius: 16, roadAxis: "northSouth", roadSide: 1 }], f.profile);
     f.ride.registerStationStop(fuel.canUsePump);
     f.ride.registerStationStop(false); f.ride.registerStationStop(true);
     expect(f.finish()).toMatchObject({ bonusTip: 30, tip: 80 });

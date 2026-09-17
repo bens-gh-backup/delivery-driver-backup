@@ -16,6 +16,7 @@ export interface DeliveryPoint {
 
 export interface GasStation {
   position: Vector3;
+  pumpPositions: Vector3[];
   radius: number;
   roadAxis: RoadAxis;
   roadSide: -1 | 1;

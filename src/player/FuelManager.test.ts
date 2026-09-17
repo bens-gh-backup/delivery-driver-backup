@@ -44,4 +44,34 @@ describe("FuelManager", () => {
     scene.dispose();
     engine.dispose();
   });
+
+  it("refuels on either side of each actual pump, with the same reach in every station orientation", () => {
+    const engine = new NullEngine(), scene = new Scene(engine);
+    const town = new TownGenerator(scene).generate();
+    const player = new PlayerCar(scene, town.roadSpawnPoints);
+    const fuel = new FuelManager(), profile = new PlayerProfile();
+    const orientations = new Set<string>();
+    for (const station of town.gasStations) {
+      orientations.add(`${station.roadAxis}/${station.roadSide}`);
+      const axis = station.roadAxis === "northSouth" ? "x" : "z";
+      for (const pump of station.pumpPositions) for (const side of [-1, 1]) {
+        // Cover ordinary parking and the edge of the pump's reach. The outer
+        // positions used to fail because distance was measured from the map pin.
+        for (const distance of [7, station.radius - .1, station.radius + .1]) {
+          player.root.position.copyFrom(pump);
+          player.root.position[axis] += side * station.roadSide * distance;
+          profile.money = 100;
+          fuel.fuelPercent = .5;
+          fuel.update(.5, player, town.gasStations, profile, true);
+          const withinReach = distance < station.radius;
+          expect(fuel.canUsePump).toBe(withinReach);
+          expect(fuel.isRefueling).toBe(withinReach);
+          expect(fuel.fuelPercent > .5).toBe(withinReach);
+          expect(profile.money < 100).toBe(withinReach);
+        }
+      }
+    }
+    expect(orientations.size).toBe(4);
+    scene.dispose(); engine.dispose();
+  });
 });
