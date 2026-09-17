@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GAME_CONFIG } from "../game/config";
-import { projectMapHeight, projectMapPoint, projectMapWidth } from "./MapProjection";
+import { projectMapHeight, projectMapPoint, projectMapWidth, unprojectMapPoint } from "./MapProjection";
 
 describe("MapProjection", () => {
   const totalX = GAME_CONFIG.world.blocksX * GAME_CONFIG.world.blockSize
@@ -60,5 +60,18 @@ describe("MapProjection", () => {
       GAME_CONFIG.world.roadWidth / totalZ * 100,
       3,
     );
+  });
+
+  it("inverts clicks at corners and arbitrary points for square and rectangular worlds", () => {
+    for (const area of [bounds, { minX: -300, maxX: 900, minZ: -100, maxZ: 450 }]) {
+      expect(unprojectMapPoint(0, 0, area)).toEqual({ x: area.minX, z: area.maxZ });
+      expect(unprojectMapPoint(100, 100, area)).toEqual({ x: area.maxX, z: area.minZ });
+      for (const [x, y] of [[0, 100], [100, 0], [50, 50], [17.83, 93.22]]) {
+        const world = unprojectMapPoint(x, y, area);
+        const point = projectMapPoint(world.x, world.z, area);
+        expect(point.x).toBeCloseTo(x, 10);
+        expect(point.y).toBeCloseTo(y, 10);
+      }
+    }
   });
 });

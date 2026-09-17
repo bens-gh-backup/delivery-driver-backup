@@ -26,7 +26,7 @@ import {
   type MissionLicenseDefinition,
   type MissionLicenseId,
 } from "../missions/MissionLicenseCatalog";
-import { projectMapHeight, projectMapPoint, projectMapWidth } from "./MapProjection";
+import { projectMapHeight, projectMapPoint, projectMapWidth, unprojectMapPoint } from "./MapProjection";
 
 export interface GameUIActions {
   start(): void;
@@ -45,6 +45,9 @@ export interface GameUIActions {
   debugEquipVehicle(id: string): void;
   debugTogglePoliceVision(): boolean;
   resetProgression(): void;
+  getManualWaypoint(): Vector3 | null;
+  canSetManualWaypoint(): boolean;
+  setManualWaypoint(position: Vector3 | null): boolean;
   debugUnlockRacing?: () => void;
   debugResetRaceFinish?: (regionId: string) => void;
   purchaseRacingLicense?: () => string;
@@ -81,6 +84,7 @@ interface MapMarkers {
   pickup: HTMLDivElement;
   dropoff: HTMLDivElement;
   reward: HTMLDivElement;
+  waypoint: HTMLButtonElement | null;
 }
 
 export class GameUI {
@@ -140,6 +144,7 @@ export class GameUI {
   private lastRaceResultHtml = "";
   private mapTown: Town | null = null;
   private mapMarkers: MapMarkers | null = null;
+  private mapCanvas: HTMLDivElement | null = null;
   private phoneMapMarkers: MapMarkers | null = null;
   private phoneTown: Town | null = null;
   private phoneTab: MissionLicenseId | "training" | "garage" | "upgrades" | "scorecard" = "training";
@@ -484,6 +489,7 @@ export class GameUI {
     });
     this.map = document.createElement("div");
     this.map.className = "map-overlay hidden";
+    this.map.addEventListener("click", event => this.handleWaypointClick(event));
     this.refuelOverlay = document.createElement("div");
     this.refuelOverlay.className = "refuel-overlay hidden";
     this.refuelOverlay.innerHTML = `
@@ -807,7 +813,8 @@ export class GameUI {
     setClass(this.collisionFlash, "hidden", this.raceFeedbackSeconds <= 0 && !ride.collisionFlashText);
 
     const raceObjective = raceActive ? this.raceSnapshot?.route[this.raceSnapshot.checkpoint] ?? null : null;
-    this.updateIndicator(raceSession ? (raceActive ? objectivePosition ?? (raceObjective ? new Vector3(raceObjective.x, 0, raceObjective.z) : null) : null) : objectivePosition, player);
+    this.updateIndicator(raceSession ? (raceActive ? objectivePosition ?? (raceObjective ? new Vector3(raceObjective.x, 0, raceObjective.z) : null) : null)
+      : objectivePosition ?? this.actions.getManualWaypoint(), player);
     if (this.phoneOpen) {
       this.phoneRefreshElapsed += deltaTime;
       if (this.lastPhoneHtml === "" || this.phoneRefreshElapsed >= GAME_CONFIG.ride.offerDistanceRefreshSeconds) {
@@ -1417,7 +1424,33 @@ export class GameUI {
     town: Town,
   ): void {
     if (this.mapTown !== town || !this.mapMarkers) this.buildMap(town);
+    setClass(this.mapCanvas!, "waypoint-enabled", this.actions.canSetManualWaypoint());
     this.updateMapMarkers(this.mapMarkers!, ride, ambulanceDriver, player, town);
+  }
+
+  private handleWaypointClick(event: MouseEvent): void {
+    if (!this.mapOpen || event.button !== 0 || !this.actions.canSetManualWaypoint()) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-map="waypoint"]')) {
+      this.actions.setManualWaypoint(null);
+      event.preventDefault();
+      return;
+    }
+    const canvas = this.mapCanvas;
+    if (!canvas || !this.mapTown || !canvas.contains(target)) return;
+    // Measure only on a click. Percent-positioned markers use the inside of the
+    // border, so using the outer rectangle would shift pins at different sizes.
+    const rect = canvas.getBoundingClientRect(), style = getComputedStyle(canvas);
+    const left = parseFloat(style.borderLeftWidth), top = parseFloat(style.borderTopWidth);
+    const width = rect.width - left - parseFloat(style.borderRightWidth);
+    const height = rect.height - top - parseFloat(style.borderBottomWidth);
+    if (width <= 0 || height <= 0) return;
+    const x = (event.clientX - rect.left - left) / width * 100;
+    const y = (event.clientY - rect.top - top) / height * 100;
+    if (x < 0 || x > 100 || y < 0 || y > 100) return;
+    const point = unprojectMapPoint(x, y, this.mapTown);
+    this.actions.setManualWaypoint(new Vector3(point.x, 0, point.z));
   }
 
   private updateMapMarkers(markers: MapMarkers, ride: RideManager, ambulanceDriver: AmbulanceDriverManager,
@@ -1453,6 +1486,10 @@ export class GameUI {
 
     this.updateObjectiveMapMarker(markers.pickup, pickup?.position.x, pickup?.position.z, town, showingPickup);
     this.updateObjectiveMapMarker(markers.dropoff, destination?.position.x, destination?.position.z, town, showingDropoff);
+    if (markers.waypoint) {
+      const waypoint = this.actions.getManualWaypoint();
+      this.updateObjectiveMapMarker(markers.waypoint, waypoint?.x, waypoint?.z, town, waypoint !== null);
+    }
   }
 
   private readMapMarkers(root: HTMLElement, prefix = ""): MapMarkers | null {
@@ -1462,6 +1499,7 @@ export class GameUI {
       pickup: root.querySelector(`[data-map="${prefix}pickup"]`)!,
       dropoff: root.querySelector(`[data-map="${prefix}dropoff"]`)!,
       reward: root.querySelector(`[data-map="${prefix}reward"]`)!,
+      waypoint: root.querySelector(`[data-map="${prefix}waypoint"]`),
     };
   }
 
@@ -1469,6 +1507,7 @@ export class GameUI {
     this.map.innerHTML = `<div class="map-panel"><div class="map-title">MAP</div>
       ${this.mapContents(town)}<div class="phone-close-hint">M TO CLOSE · ESC TO PAUSE</div></div>`;
     this.mapTown = town;
+    this.mapCanvas = this.map.querySelector(".map-canvas");
     this.mapMarkers = this.readMapMarkers(this.map);
   }
 
@@ -1506,11 +1545,12 @@ export class GameUI {
           <div class="map-marker dropoff hidden" data-map="${prefix}dropoff" role="img" aria-label="Dropoff" title="Dropoff"></div>
           <div class="map-training-reward hidden" data-map="${prefix}reward" aria-hidden="true"></div>
           <div class="map-player" data-map="${prefix}player">▲</div>
+          ${prefix === "" ? '<button type="button" class="map-waypoint hidden" data-map="waypoint" aria-label="Remove waypoint" title="Remove waypoint"></button>' : ""}
         </div>`;
   }
 
   private updateObjectiveMapMarker(
-    marker: HTMLDivElement,
+    marker: HTMLElement,
     x: number | undefined,
     z: number | undefined,
     town: Town,
