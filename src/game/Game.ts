@@ -61,6 +61,7 @@ export class Game {
   private ambulanceDriver: AmbulanceDriverManager | null = null;
   private profile: PlayerProfile | null = null;
   private activity: ActivityManager | null = null;
+  private manualWaypoint: Vector3 | null = null;
   private drivingBehavior: DrivingBehaviorManager | null = null;
   private worldQuery: WorldQuery | null = null;
   private readonly passengerTurnTracker = new PassengerTurnTracker();
@@ -98,6 +99,9 @@ export class Game {
       debugEquipVehicle: (id) => this.debugEquipVehicle(id),
       debugTogglePoliceVision: () => this.police?.toggleDebugVision() ?? false,
       resetProgression: () => this.resetProgression(),
+      getManualWaypoint: () => this.manualWaypoint,
+      canSetManualWaypoint: () => this.canSetManualWaypoint(),
+      setManualWaypoint: position => this.setManualWaypoint(position),
       purchaseRacingLicense: () => this.purchaseRacingLicense(),
       startRace: (regionId) => this.startRace(regionId),
       retryRace: () => this.retryRace(),
@@ -400,6 +404,7 @@ export class Game {
   }
 
   private disposeSimulation(): void {
+    this.manualWaypoint = null;
     this.racing?.dispose();
     this.racing = null;
     this.raceResult = null;
@@ -432,6 +437,24 @@ export class Game {
     this.town = null;
   }
 
+  private canSetManualWaypoint(): boolean {
+    return this.state === GameState.Playing && this.town !== null && this.activity !== null
+      && !this.activity.hasActiveActivity && !this.racing?.isActive;
+  }
+
+  private setManualWaypoint(position: Vector3 | null): boolean {
+    if (!this.canSetManualWaypoint()) return false;
+    if (position) {
+      const town = this.town!;
+      if (!Number.isFinite(position.x) || !Number.isFinite(position.z)
+        || position.x < town.minX || position.x > town.maxX
+        || position.z < town.minZ || position.z > town.maxZ) return false;
+    }
+    // Session-only navigation; never register this as a mission or save it to the profile.
+    this.manualWaypoint = position ? new Vector3(position.x, 0, position.z) : null;
+    return true;
+  }
+
   private acceptRide(categoryId: MissionLicenseId, id: string, regionId?: string): boolean {
     if (
       this.state !== GameState.Playing
@@ -441,7 +464,9 @@ export class Game {
     ) {
       return false;
     }
-    return this.activity.start(this.ride, () => this.ride!.acceptRide(categoryId, id, regionId));
+    const accepted = this.activity.start(this.ride, () => this.ride!.acceptRide(categoryId, id, regionId));
+    if (accepted) this.manualWaypoint = null;
+    return accepted;
   }
 
   private acceptAmbulanceDriver(id: string, regionId?: string): boolean {
@@ -456,6 +481,7 @@ export class Game {
     }
     const accepted = this.activity.start(this.ambulanceDriver, () => this.ambulanceDriver!.acceptOffer(id, regionId));
     if (accepted) {
+      this.manualWaypoint = null;
       this.player!.equipVehicle(AMBULANCE_VEHICLE, AMBULANCE_VEHICLE.stats, true);
       this.capturePlayerPhysicsPose();
     }
@@ -573,6 +599,7 @@ export class Game {
     this.restorePlayerPhysicsPose();
     const returnPose = { x: this.player.root.position.x, z: this.player.root.position.z, heading: this.player.heading };
     if (!this.activity.start(this.racing, () => this.racing!.start(regionId, this.player!))) return false;
+    this.manualWaypoint = null;
     this.raceReturnPose = returnPose;
     this.raceStartPose = { x: this.player.root.position.x, z: this.player.root.position.z, heading: this.player.heading };
     this.raceResult = null;

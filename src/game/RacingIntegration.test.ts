@@ -102,16 +102,19 @@ describe("Game racing integration", () => {
     ["outside the playing state", (game: GameStub) => { game.state = GameState.Paused; }],
   ])("does not start a race %s", (_label, mutate) => {
     const game = createGameStub();
+    game.manualWaypoint = new Vector3(20, 0, 30);
     mutate(game);
 
     expect(call<boolean>("startRace", game, "block-0-0")).toBe(false);
     expect(game.racing.start).not.toHaveBeenCalled();
     expect(game.activity.start).not.toHaveBeenCalled();
     expect(game.traffic.setSuspended).not.toHaveBeenCalled();
+    expect(game.manualWaypoint).toEqual(new Vector3(20, 0, 30));
   });
 
   it("starts an allowed race through ActivityManager and suspends traffic", () => {
     const game = createGameStub();
+    game.manualWaypoint = new Vector3(20, 0, 30);
 
     expect(call<boolean>("startRace", game, "block-2-3")).toBe(true);
     expect(game.racing.start).toHaveBeenCalledWith("block-2-3", game.player);
@@ -120,6 +123,15 @@ describe("Game racing integration", () => {
     expect(game.ui.closePhone).toHaveBeenCalledTimes(1);
     expect(game.ui.closeShop).toHaveBeenCalledTimes(1);
     expect(game.raceReturnPose).toEqual({ x: 100, z: 200, heading: 0.25 });
+    expect(game.manualWaypoint).toBeNull();
+  });
+
+  it("preserves a waypoint if the race manager rejects the start", () => {
+    const game = createGameStub();
+    game.manualWaypoint = new Vector3(20, 0, 30);
+    game.racing.start.mockReturnValue(false);
+    expect(call<boolean>("startRace", game, "block-0-0")).toBe(false);
+    expect(game.manualWaypoint).toEqual(new Vector3(20, 0, 30));
   });
 
   it("aborting a race restores the player pose and traffic without recording a result", () => {

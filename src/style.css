@@ -760,6 +760,39 @@ button:disabled {
   background: rgba(225, 232, 236, 0.18);
 }
 
+/* Only the M map accepts waypoint clicks. Keep its surrounding panel click-through. */
+.map-overlay .map-canvas { pointer-events: auto; }
+.map-overlay .map-canvas.waypoint-enabled { cursor: crosshair; }
+.map-waypoint {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transform: translate(-50%, -50%);
+  z-index: 7;
+}
+.map-waypoint::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid white;
+  border-radius: 2px;
+  background: #8652d4;
+  box-shadow: 0 0 0 1px #432366, 0 0 8px #8652d480;
+  transform: rotate(45deg);
+}
+.map-panel .map-waypoint, .map-panel .map-waypoint:hover, .map-panel .map-waypoint:focus-visible {
+  background: transparent;
+  border: 0;
+}
+.map-waypoint:hover::before { background: #a478ed; }
+.map-panel .map-waypoint:focus-visible { outline: 2px solid #8652d4; outline-offset: 2px; }
+
 .map-road.northSouth {
   top: 0;
   height: 100%;
