@@ -1,3 +1,5 @@
+import { planBlock } from "./BlockLayout";
+import { createFenceMaterial, createFenceMesh } from "./FenceVisuals";
 import { gasForecourtBounds, gasForecourtOutline, WORLD_SURFACES } from "./SurfaceLayout";
 import { addServiceBillboard, addServiceFascia, serviceSignMaterial } from "./ServiceSigns";
 import { createLowPolyVehicleMesh } from "../vehicles/VehicleMeshFactory";
@@ -5,7 +7,7 @@ import { getVehicleDefinition } from "../vehicles/VehicleCatalog";
 import { hasEnhancedGraphics } from "../graphics/GraphicsMode";
 import { addPavementDetails, addStreetSign, entranceApproach, overlapsArea } from "./StreetDetails";
 import { createNoirBuilding } from "./BuildingVisuals";
-import { CITY_STYLE, CityGeometry, districtForBlock, visualSeed, type CityDistrict, type DistrictBlock, type BuildingLot } from "./CityStyle";
+import { CITY_STYLE, CityGeometry, districtForBlock, visualSeed, type CityDistrict, type DistrictBlock, type BuildingLot, type BuildingFrontage } from "./CityStyle";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { RawTexture } from "@babylonjs/core/Materials/Textures/rawTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
@@ -34,6 +36,7 @@ export interface Town {
   buildings: BuildingLot[];
   residentialTrees: { x: number; z: number; radius: number }[];
   curbFootprints: BoxCollider[];
+  fenceFootprints: BoxCollider[];
   meshes: Mesh[];
   staticColliders: BoxCollider[];
   roadPositionsX: number[];
@@ -62,7 +65,6 @@ interface ServiceLocation {
 
 export class TownGenerator {
   private readonly config = GAME_CONFIG.world;
-  private readonly rng = seededRandom(1842);
   private readonly materials: Record<string, StandardMaterial> = {};
 
   constructor(private readonly scene: Scene) {}
@@ -81,6 +83,7 @@ export class TownGenerator {
     const staticColliders: BoxCollider[] = [];
     const districts: DistrictBlock[] = [];
     const buildings: BuildingLot[] = [];
+    const fenceFootprints: BoxCollider[] = [];
 
     const ground = MeshBuilder.CreateGround("ground", { width: totalX + 100, height: totalZ + 100 }, this.scene);
     ground.material = this.materials.ground;
@@ -140,6 +143,14 @@ export class TownGenerator {
     const dealerships = this.createDealerships(roadPositionsX, roadPositionsZ, roads,
       [...staticColliders, ...gasReservations], meshes, staticColliders);
     const dealerReservations = this.createLegalDrivingAreas([], [], dealerships);
+    // Reserve every service before frontage rows consume the street edge.
+    const serviceLocations = this.createServiceLocations(roadPositionsX, roadPositionsZ,
+      [...staticColliders, ...gasReservations, ...dealerReservations], GAME_CONFIG.repair.shopCount,
+      gasStations.map(station => station.position));
+    const autoBodyShops = this.createAutoBodyShops(serviceLocations, meshes, staticColliders);
+    const legalDrivingAreas = this.createLegalDrivingAreas(gasStations, autoBodyShops, dealerships);
+    const reservations = [...clinicReservations, ...legalDrivingAreas];
+
 
     for (let bx = 0; bx < blocksX; bx++) {
       for (let bz = 0; bz < blocksZ; bz++) {
@@ -161,99 +172,41 @@ export class TownGenerator {
         sidewalk.material = this.materials.sidewalk;
         meshes.push(sidewalk);
 
-        const buildingConfig = this.config.buildings;
-        const districtConfig = CITY_STYLE.districts[district];
-        const lotsPerSide = Math.max(buildingConfig.minLotsPerSide, Math.floor(blockSize / buildingConfig.lotTargetSize));
-        const buildableSize = blockSize - sidewalkWidth * 2 - buildingConfig.buildableInset;
-        const lotSize = buildableSize / lotsPerSide;
-        let buildingIndex = 0;
-        for (let lotX = 0; lotX < lotsPerSide; lotX++) {
-          for (let lotZ = 0; lotZ < lotsPerSide; lotZ++) {
-            const landmark = district === "downtown" && bz === Math.floor(blocksZ/2)
-              && (bx === Math.floor(blocksX/2)-1 || bx === Math.floor(blocksX/2)+1) && lotX === 1 && lotZ === 1;
-            if (this.rng() < districtConfig.emptyChance && !landmark) continue;
-            const lotCoverageRange = buildingConfig.maxLotCoverage - buildingConfig.minLotCoverage;
-            const width = lotSize * (buildingConfig.minLotCoverage + this.rng() * lotCoverageRange) * districtConfig.coverage;
-            const depth = lotSize * (buildingConfig.minLotCoverage + this.rng() * lotCoverageRange) * districtConfig.coverage;
-            const lotCenterX = centerX - buildableSize / 2 + lotSize * (lotX + 0.5);
-            const lotCenterZ = centerZ - buildableSize / 2 + lotSize * (lotZ + 0.5);
-            const jitter = lotSize * (district === "downtown" ? 0.02 : buildingConfig.lotJitter);
-            const x = lotCenterX + (this.rng() * 2 - 1) * jitter;
-            const z = lotCenterZ + (this.rng() * 2 - 1) * jitter;
-            const height = landmark ? 82 : districtConfig.minHeight + this.rng() * (districtConfig.maxHeight-districtConfig.minHeight);
-            const name = `building-${bx}-${bz}-${buildingIndex++}`;
-            if ([...gasReservations, ...clinicReservations, ...dealerReservations].some(area => (
-              Math.abs(x - area.x) < width / 2 + area.halfX + this.config.servicePlacement.buildingClearance
-              && Math.abs(z - area.z) < depth / 2 + area.halfZ + this.config.servicePlacement.buildingClearance
-            ))) continue;
-            const facing = lotX === 0 ? 1 : lotX === lotsPerSide-1 ? 3 : lotZ < lotsPerSide/2 ? 0 : 2;
-            buildings.push({x,z,width,depth,height,district,landmark,facing});
-            meshes.push(...this.createBuildingMeshes(
-              name,
-              x,
-              z,
-              width,
-              depth,
-              height,
-              this.pickBuildingMaterial(name),
-              district,
-              landmark,
-              facing,
-              (lotX === 0 || lotX === lotsPerSide-1) && (lotZ === 0 || lotZ === lotsPerSide-1)
-                ? (facing - (lotZ === 0 ? 0 : 2) + 4) % 4 : null,
-              lotX === 0 || lotX === lotsPerSide-1 || lotZ === 0 || lotZ === lotsPerSide-1,
-            ));
-            staticColliders.push({ x, z, halfX: width / 2, halfZ: depth / 2 });
-
-          }
+        const layout = planBlock(bx, bz, centerX, centerZ, district, reservations);
+        for (const lot of layout.buildings) {
+          const name = lot.frontage!.id;
+          buildings.push(lot);
+          meshes.push(...this.createBuildingMeshes(name, lot.x, lot.z, lot.width, lot.depth, lot.height,
+            this.pickBuildingMaterial(name), district, lot.landmark, lot.facing, null, true, lot.frontage));
+          staticColliders.push({ x: lot.x, z: lot.z, halfX: lot.width / 2, halfZ: lot.depth / 2 });
         }
-
-        if (buildingIndex === 0) {
-          const width = lotSize * buildingConfig.fallbackCoverage;
-          const depth = lotSize * buildingConfig.fallbackCoverage;
-          const height = buildingConfig.fallbackHeight;
-          const x = centerX;
-          const z = centerZ;
-          buildings.push({x,z,width,depth,height,district,landmark:false,facing:0});
-          meshes.push(...this.createBuildingMeshes(
-            `building-${bx}-${bz}-${buildingIndex}`,
-            x,
-            z,
-            width,
-            depth,
-            height,
-            this.pickBuildingMaterial(`fallback-${bx}-${bz}`),
-            district,
-          ));
-          staticColliders.push({ x, z, halfX: width / 2, halfZ: depth / 2 });
+        const details = new CityGeometry();
+        for (const {area, color} of layout.ground) {
+          const x = area.x - centerX, z = area.z - centerZ, y = WORLD_SURFACES.garden;
+          details.face([[x-area.halfX,y,z-area.halfZ],[x+area.halfX,y,z-area.halfZ],
+            [x+area.halfX,y,z+area.halfZ],[x-area.halfX,y,z+area.halfZ]], color);
         }
+        // One static prism per run, with a single shared pattern for board seams.
+        meshes.push(createFenceMesh(this.scene, `fences-${bx}-${bz}`, layout.fenceRuns, centerX, centerZ,
+          district === "downtown" ? "#647774" : "#b9a68a", this.materials.fence));
+        staticColliders.push(...layout.fences);
+        fenceFootprints.push(...layout.fences);
+        meshes.push(details.mesh(this.scene, `block-details-${bx}-${bz}`, this.materials.city, centerX, centerZ));
       }
     }
 
     const roadSpawnPoints = this.createRoadWaypoints(roadPositionsX, roadPositionsZ);
     const deliveryPoints = this.createDeliveryPoints(roadPositionsX, roadPositionsZ, roads);
-    const serviceLocations = this.createServiceLocations(
-      roadPositionsX,
-      roadPositionsZ,
-      [...staticColliders, ...dealerReservations],
-      GAME_CONFIG.repair.shopCount,
-    );
-    const autoBodyShops = this.createAutoBodyShops(
-      serviceLocations,
-      meshes,
-      staticColliders,
-    );
-    const legalDrivingAreas = this.createLegalDrivingAreas(gasStations, autoBodyShops, dealerships);
     const approaches = buildings.map(entranceApproach);
     const residentialTrees: Town["residentialTrees"] = [];
     const radius = CITY_STYLE.streetDetails.treeCanopyRadius;
     // Place only after every neighboring building and service entrance is known.
     for (const [index, lot] of buildings.entries()) {
-      if (lot.district !== "residential" || visualSeed(`tree-${index}`) % 5 !== 0) continue;
-      const ns = lot.facing % 2 === 0, front = lot.facing < 2 ? -1 : 1;
+      const yard = lot.frontage?.yard;
+      if (!yard || visualSeed(`tree-${lot.frontage!.id}`) / 0xffffffff >= this.config.buildings.yardTreeChance) continue;
       const candidates = [-1, 1].map(side => ({
-        x: lot.x + (ns ? side * (lot.width / 2 + radius + 2) : -front * lot.width * .25),
-        z: lot.z + (ns ? -front * lot.depth * .25 : side * (lot.depth / 2 + radius + 2)),
+        x: yard.x + side * Math.min(5, yard.halfX - radius - 2),
+        z: yard.z + side * Math.min(5, yard.halfZ - radius - 2),
       }));
       const location = candidates.find(({x,z}) =>
         !roadPositionsX.some(road => Math.abs(x-road) < roadWidth/2 + radius) &&
@@ -288,6 +241,7 @@ export class TownGenerator {
       buildings,
       residentialTrees,
       curbFootprints,
+      fenceFootprints,
       meshes: optimizedMeshes,
       staticColliders,
       roadPositionsX,
@@ -330,6 +284,7 @@ export class TownGenerator {
     this.materials.dealerBase = this.material("dealership-base", new Color3(.19, .34, .52));
     this.materials.clinicBase = this.material("clinic-base-mat", new Color3(0.82, 0.87, 0.87));
     this.materials.city = this.material("city-flat-mat",Color3.White());
+    this.materials.fence = createFenceMaterial(this.scene);
     this.materials.neon = this.material("city-neon-mat",Color3.White());
     this.materials.neon.disableLighting=true;
     this.materials.neon.emissiveColor=Color3.White().scale(CITY_STYLE.lighting.signIntensity);
@@ -527,6 +482,7 @@ export class TownGenerator {
     facing = 0,
     cornerSide: number | null = null,
     streetFrontage = true,
+    frontage?: BuildingFrontage,
   ): Mesh[] {
     // Roof detail uses its own seed so render-mode choices cannot change placement.
     const random=seededRandom(visualSeed(name));
@@ -536,7 +492,7 @@ export class TownGenerator {
       offsetZ: (random() * 2 - 1) * depth * 0.18,
     } : null;
     if (hasEnhancedGraphics(this.scene)) {
-      return createNoirBuilding(this.scene,name,x,z,width,depth,height,this.materials.city,this.materials.neon,district,landmark,facing,cornerSide,streetFrontage);
+      return createNoirBuilding(this.scene,name,x,z,width,depth,height,this.materials.city,this.materials.neon,district,landmark,facing,cornerSide,streetFrontage,frontage);
     }
     const building = MeshBuilder.CreateBox(name, { width, height, depth }, this.scene);
     building.position.set(x, height / 2, z);
@@ -743,6 +699,7 @@ export class TownGenerator {
     roadPositionsZ: number[],
     colliders: BoxCollider[],
     count: number,
+    existing: readonly Vector3[] = [],
   ): ServiceLocation[] {
     const candidates: ServiceLocation[] = [];
     const offset = this.config.roadWidth / 2 + this.config.sidewalkWidth + 12;
@@ -779,7 +736,9 @@ export class TownGenerator {
     const footprintHalfX = 31;
     const footprintHalfZ = 21;
     const clearance = this.config.servicePlacement.buildingClearance;
-    const buildableCandidates = candidates.filter(({ position }) => !colliders.some((collider) => (
+    const buildableCandidates = candidates.filter(({ position }) => existing.every(other =>
+      Math.hypot(position.x-other.x, position.z-other.z) >= this.config.servicePlacement.minimumSpacing)
+      && !colliders.some((collider) => (
       Math.abs(position.x - collider.x) < footprintHalfX + collider.halfX + clearance
       && Math.abs(position.z - collider.z) < footprintHalfZ + collider.halfZ + clearance
     )));
@@ -907,18 +866,27 @@ export class TownGenerator {
     return locations.map(({ position, inwardX, roadAxis, roadSide }, index) => {
       const axis = roadAxis ?? "northSouth";
       const side = roadSide ?? inwardX;
-      meshes.push(...this.createGasStationMeshes(position, index, colliders, axis, side));
-      return { position, radius: GAME_CONFIG.fuel.refuelRadius, roadAxis: axis, roadSide: side };
+      const layout = GAME_CONFIG.presentation.gasStation;
+      const ns = axis === "northSouth";
+      // Visuals, collision and refueling all use these same pump centers.
+      const pumpPositions = [-layout.pumpSpacing / 2, layout.pumpSpacing / 2].map(along => new Vector3(
+        position.x + (ns ? layout.pumpSetback * side : along),
+        WORLD_SURFACES.service,
+        position.z + (ns ? along : layout.pumpSetback * side),
+      ));
+      const station: GasStation = { position, pumpPositions, radius: GAME_CONFIG.fuel.refuelRadius,
+        roadAxis: axis, roadSide: side };
+      meshes.push(...this.createGasStationMeshes(station, index, colliders));
+      return station;
     });
   }
 
   private createGasStationMeshes(
-    position: Vector3,
+    station: GasStation,
     index: number,
     colliders: BoxCollider[],
-    roadAxis: RoadAxis,
-    roadSide: -1 | 1,
   ): Mesh[] {
+    const { position, roadAxis, roadSide } = station;
     const meshes: Mesh[] = [];
     const ns = roadAxis === "northSouth";
     const layout = GAME_CONFIG.presentation.gasStation;
@@ -945,7 +913,7 @@ export class TownGenerator {
     paving.face(outline, hasEnhancedGraphics(this.scene) ? CITY_STYLE.palette.road : "#212426");
     meshes.push(paving.mesh(this.scene, `gas-forecourt-${index}`, this.materials.city, position.x, position.z));
 
-    // Keep the roof beyond refuelRadius + camera.distance; no roof over the pump lane.
+    // Keep the roof beyond the rear pump reach + camera.distance; no roof over either lane.
     const rear = point(0, layout.canopySetback);
     const canopy = MeshBuilder.CreateBox(`gas-canopy-${index}`, { width: ns ? layout.canopyDepth : 34,
       height: GAME_CONFIG.presentation.serviceSigns.gasHeight, depth: ns ? 34 : layout.canopyDepth }, this.scene);
@@ -966,12 +934,14 @@ export class TownGenerator {
     for (const along of [-10, 10]) box(along, face, 4.2, 7, .2, 3.4, "#263f4a");
     box(0, face, ground + 2.8, 3.8, .2, 5.6, "#263f4a");
 
-    // Two uncovered dispensers beside a clear, road-parallel pull-through lane.
-    for (const along of [-layout.pumpSpacing / 2, layout.pumpSpacing / 2]) {
-      const inward = layout.pumpSetback;
-      box(along, inward, ground + .25, 6, 3.5, .5, "#b2b9b3", true);
+    // Two uncovered dispensers with clear, road-parallel lanes on both sides.
+    for (const pump of station.pumpPositions) {
+      const along = ns ? pump.z - position.z : pump.x - position.x;
+      const inward = (ns ? pump.x - position.x : pump.z - position.z) * roadSide;
+      // Compact, drive-over plinth; only the dispenser body blocks the car.
+      box(along, inward, ground + .25, 4, 3, .5, "#b2b9b3");
       box(along, inward, ground + 1.2, 2.6, 2.1, 1.4, "#246784");
-      box(along, inward, ground + 3.15, 3, 2.5, 2.5, "#e3e9df");
+      box(along, inward, ground + 3.15, 3, 2.5, 2.5, "#e3e9df", true);
       box(along, inward, ground + 4.55, 3.2, 2.7, .3, "#249b78");
       for (const side of [-1, 1]) {
         const display = inward + side * (1.25 + CITY_STYLE.facades.surfaceStep + .08);
@@ -989,8 +959,8 @@ export class TownGenerator {
     }
     meshes.push(details.mesh(this.scene, `gas-details-${index}`, this.materials.city, position.x, position.z));
 
-    // Keep the roadside sign off both the pump lane and the rear kiosk in every orientation.
-    const sign = point(27, 20);
+    // Roadside, beside the apron rather than in either entrance or behind the kiosk.
+    const sign = point(layout.signAlongOffset, layout.signSetback);
     meshes.push(...addServiceBillboard(this.scene, `gas-${index}`, sign.x, sign.z,
       "GAS", this.materials.gasBase, this.materials.gasSign, this.materials.gasLettering, roadAxis));
     colliders.push({ x: sign.x, z: sign.z, halfX: .75, halfZ: .75 });

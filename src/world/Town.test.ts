@@ -70,7 +70,7 @@ describe("TownGenerator", () => {
         && Math.abs(curb.z-area.z) < curb.halfZ+area.halfZ
       )).toBe(false);
     }
-    expect(scene.textures).toHaveLength(0);
+    expect(scene.textures.map(t=>t.name)).toEqual(["fence-board-pattern"]);
     expect(scene.meshes.length).toBe(town.meshes.length);
     scene.dispose();
     engine.dispose();

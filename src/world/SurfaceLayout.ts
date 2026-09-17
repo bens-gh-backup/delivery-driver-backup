@@ -15,7 +15,7 @@ export const WORLD_SURFACES = {
   grateBars: .46,
 } as const;
 
-/** Street-relative lot bounds: along the road, then inward from the refueling spot. */
+/** Street-relative lot bounds: along the road, then inward from the station map marker. */
 export function gasForecourtBounds(): { halfLength: number; front: number; back: number } {
   const { sidewalkWidth, servicePlacement } = GAME_CONFIG.world;
   const halfLength = 12 + servicePlacement.gasStationDrivewayWidth;

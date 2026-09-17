@@ -4,6 +4,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { Scene } from "@babylonjs/core/scene";
 import type { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Point3 } from "../graphics/FacetedMesh";
+import type { BoxCollider } from "../game/types";
 
 export type CityDistrict = "downtown" | "residential" | "park";
 export interface DistrictBlock { bx: number; bz: number; district: CityDistrict }
@@ -11,6 +12,21 @@ export interface BuildingLot {
   x: number; z: number; width: number; depth: number; height: number;
   district: CityDistrict; landmark: boolean;
   facing: number;
+  frontage?: BuildingFrontage;
+}
+
+export interface BuildingFrontage {
+  id: string;
+  blockId: string;
+  /** Local faces: front, right, rear, left. */
+  streetSides: number[];
+  coveredHeights: number[];
+  sideClearances?: number[];
+  neighborHeights?: number[];
+  colorSeed: number;
+  yard?: BoxCollider;
+  /** Disjoint, connected pieces owned by this house, including its frontage. */
+  property?: BoxCollider[];
 }
 
 export const CITY_STYLE = {
@@ -25,8 +41,8 @@ export const CITY_STYLE = {
     curb: "#ddd1b5", seam: "#a7a795", crack: "#949987", sign: "#355d58",
   },
   districts: {
-    downtown: { minHeight: 32, maxHeight: 65, coverage: 1.15, emptyChance: 0.08 },
-    residential: { minHeight: 10, maxHeight: 23, coverage: 0.85, emptyChance: 0.24 },
+    downtown: { minHeight: 32, maxHeight: 65 },
+    residential: { minHeight: 10, maxHeight: 23 },
   },
   // Larger floor/bay spacing produces fewer, more widely spaced facade openings.
   floorHeight: 6.5,

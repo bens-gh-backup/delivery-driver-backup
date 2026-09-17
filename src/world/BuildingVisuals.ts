@@ -2,7 +2,7 @@ import { WORLD_SURFACES } from "./SurfaceLayout";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import type { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Scene } from "@babylonjs/core/scene";
-import { CITY_STYLE, CityGeometry, visualSeed, type CityDistrict } from "./CityStyle";
+import { CITY_STYLE, CityGeometry, visualSeed, type CityDistrict, type BuildingFrontage } from "./CityStyle";
 
 /** Bounded generation-time bay count; opening dimensions stay consistent as facades grow. */
 export function facadeColumnCount(span: number): number {
@@ -13,16 +13,21 @@ export function createNoirBuilding(
   scene: Scene, name: string, x: number, z: number, width: number, depth: number, height: number,
   material: StandardMaterial, neonMaterial: StandardMaterial, district: CityDistrict,
   landmark = false, facing = 0, cornerSide: number | null = null, streetFrontage = true,
+  frontage?: BuildingFrontage,
 ): Mesh[] {
   const seed = visualSeed(name), p = CITY_STYLE.palette, rules = CITY_STYLE.facades;
   const layer = rules.surfaceStep;
   const palette = district === "downtown" ? p.downtown : p.residential;
-  const wall = palette[seed % palette.length], g = new CityGeometry();
+  const wall = palette[((frontage?.colorSeed ?? 0) + seed % 3) % palette.length], g = new CityGeometry();
   if (facing % 2 !== 0) [width, depth] = [depth, width];
   const pitched = district === "residential" && seed % 3 !== 0;
-  const stepped = landmark || (district === "downtown" && seed % 3 === 0);
+  const stepped = landmark || (!frontage && district === "downtown" && seed % 3 === 0);
   const commercial = district === "downtown";
-  const streetSides = !streetFrontage ? [] : cornerSide === 1 || cornerSide === 3 ? [0, cornerSide] : [0];
+  const streetSides = frontage?.streetSides ?? (!streetFrontage ? [] : cornerSide === 1 || cornerSide === 3 ? [0, cornerSide] : [0]);
+  const cover = (side: number, w = width, d = depth) => w === width && d === depth ? frontage?.coveredHeights[side] ?? 0 : 0;
+  const neighbor = (side: number, w = width, d = depth) => w === width && d === depth ? frontage?.neighborHeights?.[side] ?? 0 : 0;
+  const limitedProjection = (side: number, amount: number, w = width, d = depth) => w === width && d === depth
+    ? Math.min(amount,(frontage?.sideClearances?.[side] ?? Infinity)/4) : amount;
 
   // All facade detail is written directly into one vertex-colored building mesh.
   function point(side: number, u: number, y: number, out: number, w = width, d = depth): [number, number, number] {
@@ -44,25 +49,31 @@ export function createNoirBuilding(
   }
   function belt(y: number, w: number, d: number, projection: number, thickness: number): void {
     for (let side = 0; side < 4; side++) {
+      if (Math.max(cover(side,w,d),neighbor(side,w,d)) >= y) continue;
       const half = (side % 2 === 0 ? w : d) / 2;
-      panel(side, -half-projection, half+projection, y-thickness, y, projection, p.trim, w, d);
+      const left = cover((side+3)%4,w,d) >= y-thickness ? 0 : limitedProjection((side+3)%4,projection,w,d);
+      const right = cover((side+1)%4,w,d) >= y-thickness ? 0 : limitedProjection((side+1)%4,projection,w,d);
+      const out=limitedProjection(side,projection,w,d);
+      panel(side, -half-left, half+right, Math.max(y-thickness,cover(side,w,d)), y, out, p.trim, w, d);
       // Opposite top strips own the corners, so the cornice closes without overlapping faces.
-      const topHalf = half + (side % 2 === 0 ? projection : 0);
-      g.face([point(side,-topHalf,y,projection,w,d),point(side,topHalf,y,projection,w,d),
-        point(side,topHalf,y,.025,w,d),point(side,-topHalf,y,.025,w,d)],p.trim);
+      const topLeft = half + (side % 2 === 0 ? left : 0), topRight = half + (side % 2 === 0 ? right : 0);
+      g.face([point(side,-topLeft,y,out,w,d),point(side,topRight,y,out,w,d),
+        point(side,topRight,y,.025,w,d),point(side,-topLeft,y,.025,w,d)],p.trim);
     }
   }
   function windows(w: number, d: number, bottom: number, top: number): void {
     for (let side = 0; side < 4; side++) {
       const span = side % 2 === 0 ? w : d;
-      const columns = streetFrontage ? facadeColumnCount(span) : Math.min(3, facadeColumnCount(span));
+      const detailed = streetSides.includes(side);
+      const columns = frontage && !detailed ? Math.min(2,facadeColumnCount(span))
+        : streetFrontage ? facadeColumnCount(span) : Math.min(3, facadeColumnCount(span));
       const bay = span / columns;
       const half = Math.min(rules.windowWidth / 2, bay * .28);
-      const detailed = streetSides.includes(side);
       const firstY = commercial ? rules.shopHeight + 1.2 : 1.5;
       // A shared floor grid continues across setbacks; window rows never stretch with the wall.
       for (let row = 0; row < CITY_STYLE.maximumWindowRows; row++) {
         const y = firstY + row * CITY_STYLE.floorHeight;
+        if (y < Math.max(cover(side,w,d),neighbor(side,w,d)) + .65 || (frontage && !detailed && row > 1)) continue;
         if (y < bottom + .65 || y + rules.windowHeight > top - 1) continue;
         for (let col = 0; col < columns; col++) {
           const center = -span / 2 + (col + .5) * bay;
@@ -74,10 +85,21 @@ export function createNoirBuilding(
     }
   }
 
+  function mass(w: number, d: number, bottom: number, top: number): void {
+    // Shared party walls have no hidden windows or duplicate coplanar faces.
+    for(let side=0;side<4;side++) {
+      const from=Math.max(bottom,cover(side,w,d));
+      if(from>=top)continue;
+      const half=(side%2===0?w:d)/2;
+      panel(side,-half,half,from,top,0,wall,w,d);
+    }
+    g.face([[-w/2,top,-d/2],[w/2,top,-d/2],[w/2,top,d/2],[-w/2,top,d/2]],p.roof);
+  }
+
   if (stepped) {
     const baseHeight = height * .55, upperWidth = width * .72, upperDepth = depth * .72;
-    g.box(0, baseHeight/2, 0, width, baseHeight, depth, wall);
-    g.box(0, baseHeight+(height-baseHeight)/2, 0, upperWidth, height-baseHeight, upperDepth, wall);
+    mass(width,depth,0,baseHeight);
+    mass(upperWidth,upperDepth,baseHeight,height);
     belt(baseHeight+.2, width, depth, .6, .65);
     belt(height+.2, upperWidth, upperDepth, .65, .75);
     windows(width, depth, 0, baseHeight);
@@ -88,13 +110,14 @@ export function createNoirBuilding(
     }
   } else {
     const rise = pitched ? 3 : 0, wallHeight = height-rise;
-    g.box(0, wallHeight/2, 0, width, wallHeight, depth, wall);
+    mass(width,depth,0,wallHeight);
     if (pitched) g.roof(0, wallHeight, 0, width+.6, depth+.6, rise, p.roof);
     if (!pitched) belt(wallHeight+.15, width, depth, .6, .65);
     windows(width, depth, 0, wallHeight);
   }
   // A continuous masonry base grounds the building without additional collision geometry.
   for (let side = 0; side < 4; side++) {
+    if(Math.max(cover(side),neighbor(side))>=(commercial?rules.shopHeight:.65))continue;
     const span = side % 2 === 0 ? width : depth;
     panel(side, -span/2, span/2, .12, commercial ? rules.shopHeight : .65, layer, p.buildingBase);
   }
@@ -113,7 +136,7 @@ export function createNoirBuilding(
           const awningY = rules.shopHeight-.45, outerY = awningY-.65;
           for (let stripe = 0; stripe < 4; stripe++) {
             const a = center-half + stripe*(half/2), b = a+half/2;
-            const color = stripe % 2 ? p.trim : p.awning[seed % p.awning.length];
+            const color = stripe % 2 ? p.trim : p.awning[(frontage?.colorSeed ?? seed) % p.awning.length];
             g.face([point(side,a,outerY,1.7),point(side,b,outerY,1.7),
               point(side,b,awningY,.13),point(side,a,awningY,.13)],color);
             panel(side,a,b,outerY-.2,outerY,1.7,color);
@@ -121,13 +144,14 @@ export function createNoirBuilding(
         }
       }
     }
-  } else {
+  } else if (!frontage) {
     g.face([[-width/2-3,WORLD_SURFACES.garden,-depth/2-3],[width/2+3,WORLD_SURFACES.garden,-depth/2-3],
       [width/2+3,WORLD_SURFACES.garden,depth/2+3],[-width/2-3,WORLD_SURFACES.garden,depth/2+3]],p.lawn);
     g.face([[-1.6,WORLD_SURFACES.path,-depth/2-7],[1.6,WORLD_SURFACES.path,-depth/2-7],
       [1.6,WORLD_SURFACES.path,-depth/2],[-1.6,WORLD_SURFACES.path,-depth/2]],p.path);
     if(seed%3===0) g.box(width*.32,height-.6,depth*.2,1.8,3,2,p.roof);
   }
+  if(frontage && !commercial && seed%3===0) g.box(width*.32,height-.6,depth*.2,1.8,3,2,p.roof);
   // Keep the existing central entrance clear, including on corner storefronts.
   panel(0,-1.45,1.45,.18,3.55,layer * 5,p.trim);
   panel(0,-1.18,1.18,.2,3.3,layer * 6,p.window);

@@ -7,7 +7,7 @@ import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { describe, expect, it, vi } from "vitest";
 import { GAME_CONFIG } from "../game/config";
 import { TownGenerator } from "./Town";
-import { WORLD_SURFACES } from "./SurfaceLayout";
+import { gasForecourtBounds, WORLD_SURFACES } from "./SurfaceLayout";
 import { WorldQuery } from "./WorldQuery";
 
 describe("world surface separation", () => {
@@ -30,10 +30,23 @@ describe("world surface separation", () => {
       const roof = bounds.get(`gas-canopy-${i}`)!;
       const axis = station.roadAxis === "northSouth" ? "x" : "z";
       const front = station.roadSide * ((station.roadSide === 1 ? roof.min[axis] : roof.max[axis]) - station.position[axis]);
+      const pumpSetback = Math.max(...station.pumpPositions.map(pump =>
+        station.roadSide * (pump[axis] - station.position[axis])));
       // Even at the rear of the interaction radius, a camera facing back toward
       // the road must fit in front of the roof (including the fascia lettering).
       expect(front - GAME_CONFIG.presentation.serviceSigns.surfaceGap)
-        .toBeGreaterThan(station.radius + GAME_CONFIG.camera.distance + 1);
+        .toBeGreaterThan(pumpSetback + station.radius + GAME_CONFIG.camera.distance + 1);
+      // The billboard is at the curb, beside the inlet instead of obstructing it.
+      const pole = bounds.get(`gas-${i}-billboard-post`)!;
+      const road = town.roads.filter(road => road.axis === station.roadAxis)
+        .sort((a, b) => Math.abs(a.center - station.position[axis]) - Math.abs(b.center - station.position[axis]))[0];
+      const poleCenter = (pole.min[axis] + pole.max[axis]) / 2;
+      const curbInset = station.roadSide * (poleCenter - road.center) - GAME_CONFIG.world.roadWidth / 2;
+      expect(curbInset).toBeGreaterThan(1);
+      expect(curbInset).toBeLessThan(GAME_CONFIG.world.sidewalkWidth + 5);
+      const alongAxis = axis === "x" ? "z" : "x";
+      expect(Math.abs((pole.min[alongAxis] + pole.max[alongAxis]) / 2 - station.position[alongAxis]))
+        .toBeGreaterThan(gasForecourtBounds().halfLength + GAME_CONFIG.player.radius + .75);
     }
     for (let i = 0; i < town.dealerships.length; i++) {
       const wall = bounds.get(`dealership-showroom-${i}`)!, roof = bounds.get(`dealership-fascia-${i}`)!;
@@ -56,7 +69,7 @@ describe("world surface separation", () => {
     scene.dispose(); engine.dispose();
   });
 
-  it("leaves a car-wide pull-through lane beside solid pumps in every station orientation", () => {
+  it("leaves car-wide lanes on both sides and between solid pumps in every station orientation", () => {
     const engine = new NullEngine(), scene = new Scene(engine), town = new TownGenerator(scene).generate();
     const query = new WorldQuery(town.staticColliders, town.roads, GAME_CONFIG.world.roadWidth / 2,
       GAME_CONFIG.world.roadWidth / 2 + GAME_CONFIG.world.sidewalkWidth, 64, town.legalDrivingAreas);
@@ -67,17 +80,19 @@ describe("world surface separation", () => {
         x: station.position.x + (station.roadAxis === "northSouth" ? inward * station.roadSide : along),
         z: station.position.z + (station.roadAxis === "northSouth" ? along : inward * station.roadSide),
       });
-      for (let along = -40; along <= 40; along += 2) {
-        const p = point(along, 0);
-        expect(blocked(p.x, p.z, 3)).toBe(false);
+      const setback = GAME_CONFIG.presentation.gasStation.pumpSetback;
+      for (const side of [-1, 1]) for (let along = -40; along <= 40; along += 2) {
+        const p = point(along, setback + side * 7);
+        expect(blocked(p.x, p.z, GAME_CONFIG.player.radius)).toBe(false);
         expect(query.isInLegalDrivingArea(p.x, p.z)).toBe(true);
       }
-      for (const along of [-10, 10]) {
-        const pump = point(along, GAME_CONFIG.presentation.gasStation.pumpSetback);
+      // A forgiving off-center approach across the row must also stay clear.
+      for (const along of [-4.5, 0, 4.5]) for (let inward = setback - 16; inward <= setback + 16; inward += 2) {
+        const p = point(along, inward);
+        expect(blocked(p.x, p.z, GAME_CONFIG.player.radius)).toBe(false);
+      }
+      for (const pump of station.pumpPositions) {
         expect(blocked(pump.x, pump.z, 0)).toBe(true);
-        // Parking next to either dispenser is inside the existing refueling area.
-        const parking = point(along, 0);
-        expect(Math.hypot(parking.x - station.position.x, parking.z - station.position.z)).toBeLessThan(station.radius);
       }
     }
     scene.dispose(); engine.dispose();
