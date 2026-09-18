@@ -6,7 +6,7 @@ import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { GAME_CONFIG } from "../game/config";
-import { PassengerType, RideState, type RideOffer, type RideResult } from "../game/types";
+import { PassengerType, RideState, type DrivingViolationTotals, type RideOffer, type RideResult } from "../game/types";
 import type { PoliceRideEvent } from "../police/PoliceManager";
 import { clamp, distanceXZ } from "../utils/math";
 import type { PlayerCar } from "../player/PlayerCar";
@@ -33,7 +33,7 @@ export class RideManager {
   collisionFlashSeconds = 0;
   private passengerElapsed = 0;
   bonusTip = 0;
-  traitTipDeduction = 0;
+  private traitRatingPenalty = 0;
   fareWaived = false;
   private tipForfeited = false;
   private pursuitActive = false;
@@ -84,7 +84,15 @@ export class RideManager {
     return true;
   }
 
-  update(deltaTime: number, player: PlayerCar, active: boolean, totalViolationPoints = 0): void {
+  /** Board an already-discovered passenger, using the same trait/violation initialization. */
+  startCurbsideRide(offer: RideOffer, totalViolationPoints: number | DrivingViolationTotals): boolean {
+    if (this.state !== RideState.Idle || this.activeRide || !offer.curbside) return false;
+    this.activeRide = offer;
+    this.pickUpPassenger(this.passengerViolationPoints(totalViolationPoints));
+    return true;
+  }
+
+  update(deltaTime: number, player: PlayerCar, active: boolean, totalViolationPoints: number | DrivingViolationTotals = 0): void {
     this.resultTimeRemaining = Math.max(0, this.resultTimeRemaining - deltaTime);
     this.collisionFlashSeconds = Math.max(0, this.collisionFlashSeconds - deltaTime);
     if (this.collisionFlashSeconds <= 0) {
@@ -97,13 +105,13 @@ export class RideManager {
 
     if (this.state === RideState.DrivingToPickup) {
       if (this.canCompleteArrival(player, this.activeRide.pickupPoint.position, GAME_CONFIG.ride.pickupRadius)) {
-        this.pickUpPassenger(totalViolationPoints);
+        this.pickUpPassenger(this.passengerViolationPoints(totalViolationPoints));
       }
       return;
     }
 
     if (this.state === RideState.PassengerOnboard) {
-      this.rideViolationPoints = Math.max(0, totalViolationPoints - this.violationBaselinePoints);
+      this.rideViolationPoints = Math.max(0, this.passengerViolationPoints(totalViolationPoints) - this.violationBaselinePoints);
       this.passengerElapsed += deltaTime;
       this.tipTimeMultiplier = clamp(
         this.tipTimeMultiplier - GAME_CONFIG.ride.fare.tipDecayPercentPerSecond
@@ -164,10 +172,18 @@ export class RideManager {
 
   private getTipBeforeBonus(): number {
     if (!this.activeRide || this.fareWaived || this.tipForfeited || this.isInstructor) return 0;
-    const ordinaryTip = this.calculateTip(
-      this.activeRide.baseFare, this.satisfaction, this.tipTimeMultiplier, this.getViolationTipMultiplier(),
-    );
-    return Math.max(0, ordinaryTip - this.traitTipDeduction);
+    return this.startingTip * this.ratingScore / 100 * this.tipTimeMultiplier;
+  }
+
+  /** Actual ordinary-tip dollars lost to trait breaches, without applying that loss twice. */
+  get traitTipDeduction(): number {
+    if (!this.activeRide || this.fareWaived || this.tipForfeited || this.isInstructor) return 0;
+    const lostScore = Math.min(this.satisfaction * this.getViolationTipMultiplier(), this.traitRatingPenalty);
+    return this.startingTip * lostScore / 100 * this.tipTimeMultiplier;
+  }
+
+  private get ratingScore(): number {
+    return clamp(this.satisfaction * this.getViolationTipMultiplier() - this.traitRatingPenalty, 0, 100);
   }
 
   get effectiveBaseFare(): number {
@@ -181,11 +197,9 @@ export class RideManager {
   registerDrivingEvent(event: "redLight" | "yellowIntersection" | "opposingLane"): void {
     const rules = GAME_CONFIG.ride.archetypes;
     if (event === "redLight" && this.hasOnboardTrait(PassengerType.Lawful)) {
-      this.traitTipDeduction += this.startingTip * rules.redLightDeduction;
-      this.flash("RED LIGHT · TIP REDUCED");
+      this.penalizeTrait("RED LIGHT");
     } else if (event === "opposingLane" && this.hasOnboardTrait(PassengerType.Careful)) {
-      this.traitTipDeduction += this.startingTip * rules.opposingLaneDeduction;
-      this.flash("OPPOSING LANE / U-TURN · TIP REDUCED");
+      this.penalizeTrait("OPPOSING LANE / U-TURN");
     } else if (event === "yellowIntersection" && this.hasOnboardTrait(PassengerType.ThrillSeeker)) {
       this.bonusTip += rules.yellowBonus;
       this.flash(`YELLOW LIGHT · +$${rules.yellowBonus}`);
@@ -195,6 +209,7 @@ export class RideManager {
   registerPursuit(active: boolean): void {
     this.pursuitActive = active;
     if (active && this.hasOnboardTrait(PassengerType.Shady) && !this.tipForfeited) {
+      if (!this.observationSeen) this.penalizeTrait("POLICE OBSERVATION");
       this.observationSeen = true;
       this.tipForfeited = true;
       this.flash("POLICE PURSUIT · TIP LOST");
@@ -206,7 +221,7 @@ export class RideManager {
   registerPoliceEvent(event: PoliceRideEvent): void {
     if (event === "violationObserved" && this.hasOnboardTrait(PassengerType.Shady) && !this.observationSeen) {
       this.observationSeen = true;
-      this.flash("POLICE OBSERVATION · $40 BONUS LOST");
+      this.penalizeTrait("POLICE OBSERVATION");
     }
     if (event === "pursuitEscaped" && this.hasOnboardTrait(PassengerType.Psychopath) && !this.escapeRewardEarned) {
       this.escapeRewardEarned = true;
@@ -216,9 +231,10 @@ export class RideManager {
   }
 
   registerForbiddenTurn(): void {
-    if (this.hasOnboardTrait(PassengerType.Compulsive) && !this.forbiddenTurnSeen) {
+    // The maneuver tracker emits once per turn; later distinct turns can cost more stars.
+    if (this.hasOnboardTrait(PassengerType.Compulsive)) {
       this.forbiddenTurnSeen = true;
-      this.flash(`LEFT TURN / U-TURN · $${GAME_CONFIG.ride.archetypes.compulsiveBonus} BONUS LOST`);
+      this.penalizeTrait("LEFT TURN / U-TURN");
     }
   }
 
@@ -265,6 +281,24 @@ export class RideManager {
     this.collisionFlashSeconds = 2;
   }
 
+  private penalizeTrait(reason: string): void {
+    const stars = GAME_CONFIG.ride.satisfaction.traitViolationStars;
+    this.traitRatingPenalty = Math.min(100, this.traitRatingPenalty + stars * 20);
+    this.flash(`${reason} · -${stars} STARS`);
+  }
+
+  private hasMissedBonusRequest(): boolean {
+    if (!GAME_CONFIG.ride.archetypes.penalizeMissedBonusRequests) return false;
+    switch (this.activeRide?.passengerType) {
+      case PassengerType.OffGrid: return !this.stationRewardEarned;
+      case PassengerType.Psychopath: return !this.escapeRewardEarned;
+      case PassengerType.ThrillSeeker: return this.bonusTip <= 0;
+      case PassengerType.RunningOnFumes:
+      case PassengerType.DemolitionDerbyFan: return !this.pendingBonus?.eligible;
+      default: return false;
+    }
+  }
+
   private get startingTip(): number {
     return (this.isInstructor ? 0 : this.activeRide?.baseFare ?? 0) * this.getMaxTipPercent() * this.baseTipMultiplier;
   }
@@ -290,7 +324,7 @@ export class RideManager {
   }
 
   getStars(): number {
-    return RideManager.satisfactionToStars(this.satisfaction);
+    return RideManager.satisfactionToStars(this.ratingScore);
   }
 
   isSpeedWarning(speedMph: number): boolean {
@@ -338,10 +372,7 @@ export class RideManager {
   }
 
   static satisfactionToStars(score: number): number {
-    if (score <= 0) {
-      return 0;
-    }
-    return Math.ceil(score / 20);
+    return clamp(Math.ceil(score / 20), 1, 5);
   }
 
   private pickUpPassenger(totalViolationPoints: number): void {
@@ -351,7 +382,7 @@ export class RideManager {
     this.state = RideState.PassengerOnboard;
     this.satisfaction = GAME_CONFIG.ride.satisfaction.startingScore;
     this.bonusTip = 0;
-    this.traitTipDeduction = 0;
+    this.traitRatingPenalty = 0;
     this.fareWaived = false;
     this.tipForfeited = false;
     this.stationRewardEarned = false;
@@ -389,7 +420,10 @@ export class RideManager {
       penaltySeconds = Math.min(deltaTime, Math.max(0, this.passengerElapsed - grace));
     }
     if (penalized) {
-      this.satisfaction = clamp(this.satisfaction - rules.speedPenaltyPerSecond * this.satisfactionPenaltyMultiplier * penaltySeconds, 0, 100);
+      // Speeding is harsher; a Hurried passenger's existing too-slow rule keeps its own tuning.
+      const speedMultiplier = rules.maxSafeSpeedMph !== undefined ? GAME_CONFIG.ride.fare.speedingPenaltyMultiplier : 1;
+      this.satisfaction = clamp(this.satisfaction - rules.speedPenaltyPerSecond * speedMultiplier
+        * this.satisfactionPenaltyMultiplier * penaltySeconds, 0, 100);
     }
   }
 
@@ -398,12 +432,14 @@ export class RideManager {
       return;
     }
     const pending = this.pendingBonus;
+    if (this.hasMissedBonusRequest()) this.penalizeTrait("REQUEST MISSED");
     if (pending?.eligible) this.bonusTip += pending.amount;
     const baseFare = this.effectiveBaseFare;
     const violationTipPenaltyPercent = this.violationTipPenaltyPercent;
     const tip = this.getCurrentTip();
     const total = baseFare + tip;
     const result: RideResult = {
+      curbside: this.activeRide.curbside,
       passengerName: this.activeRide.passengerName,
       passengerType: this.activeRide.passengerType,
       missionCategoryId: this.activeRide.missionCategoryId,
@@ -435,7 +471,7 @@ export class RideManager {
     this.state = RideState.Idle;
     this.satisfaction = GAME_CONFIG.ride.satisfaction.startingScore;
     this.bonusTip = 0;
-    this.traitTipDeduction = 0;
+    this.traitRatingPenalty = 0;
     this.fareWaived = false;
     this.tipForfeited = false;
     this.stationRewardEarned = false;
@@ -449,16 +485,16 @@ export class RideManager {
     this.rideViolationPoints = 0;
     this.collisionCooldown = 0;
     this.collisionCount = 0;
-    this.offerBoard.refillOffers(result.missionCategoryId, training?.regionId);
+    if (!result.curbside) this.offerBoard.refillOffers(result.missionCategoryId, training?.regionId);
   }
 
-  private calculateTip(baseFare: number, satisfaction: number, timeMultiplier: number, violationMultiplier: number): number {
-    return baseFare
-      * this.getMaxTipPercent()
-      * this.baseTipMultiplier
-      * (satisfaction / 100)
-      * timeMultiplier
-      * violationMultiplier;
+  private passengerViolationPoints(totals: number | DrivingViolationTotals): number {
+    // Numeric callers supply already-weighted points (legacy tests/tools). Runtime passes
+    // the existing totals object, avoiding allocations and leaving police rates unchanged.
+    if (typeof totals === "number") return totals;
+    const rules = GAME_CONFIG.ride.fare;
+    return totals.speeding * rules.speedingPenaltyMultiplier
+      + (totals.wrongSide + totals.sidewalk) * rules.illegalDrivingPenaltyMultiplier;
   }
 
   private getViolationTipMultiplier(): number {

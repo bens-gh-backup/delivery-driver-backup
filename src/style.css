@@ -35,6 +35,11 @@ body {
   pointer-events: none;
 }
 
+.upgrades-only .phone-screen { padding-top: 8px; }
+.upgrades-only .phone-topbar { justify-content: space-between; }
+.upgrade-finances { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
+.upgrade-finances span { font-size: 11px; color: #626c74; }
+
 .screen {
   position: absolute;
   inset: 0;
@@ -760,6 +765,14 @@ button:disabled {
   background: rgba(225, 232, 236, 0.18);
 }
 
+.map-park {
+  position: absolute;
+  z-index: 0;
+  transform: translate(-50%, -50%);
+  background: #c2dfb5;
+  pointer-events: none;
+}
+
 /* Only the M map accepts waypoint clicks. Keep its surrounding panel click-through. */
 .map-overlay .map-canvas { pointer-events: auto; }
 .map-overlay .map-canvas.waypoint-enabled { cursor: crosshair; }
@@ -1148,7 +1161,7 @@ button:disabled {
 
 .progression-debug {
   position: fixed;
-  top: 184px;
+  bottom: 12px;
   right: 12px;
   z-index: 101;
   width: 310px;
@@ -1157,6 +1170,9 @@ button:disabled {
   border: 1px solid rgba(157, 255, 173, 0.35);
   color: #dce5e8;
   pointer-events: auto;
+  /* Leave room for the timing panel, including its two optional hitch lines. */
+  max-height: max(0px, calc(100dvh - 420px));
+  overflow-y: auto;
 }
 
 .progression-debug-title {
@@ -1874,3 +1890,35 @@ button:disabled {
 
 /* Keep developer controls from covering the expanded phone workspace. */
 .phone-overlay:not(.hidden) ~ .progression-debug { display: none; }
+
+/* Two compact phone tabs, with licenses presented as direct purchases. */
+.upgrades-only .phone-topbar .phone-tabs { flex: 1; margin: 0; border: 0; padding: 0; }
+.license-list { display: grid; gap: 10px; }
+.license-card { padding: 12px; border: 1px solid #d7dce0; border-radius: 12px; background: #fff; }
+.license-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.license-card-heading span { color: #33715d; font-weight: 700; font-size: 12px; white-space: nowrap; }
+.license-card p { font-size: 13px; color: #5e6871; margin: 6px 0 10px; }
+.license-card button { width: 100%; margin-top: 0; padding: 10px 14px; }
+
+.chase-health { display:flex; align-items:center; gap:12px; margin-top:6px; font-size:11px; letter-spacing:.06em; }
+.chase-health.hidden { display:none; }
+.chase-health-track { width:140px; height:6px; overflow:hidden; border-radius:3px; background:#382b30; }
+.chase-health-track i { display:block; width:100%; height:100%; background:#ed6872; transform-origin:left; }
+.hud .bullet-hit { background:#702c35; color:#fff; }
+
+.race-result-overlay { background:transparent; pointer-events:none; }
+.street-race-result { width:min(300px,calc(100vw - 32px)); padding:22px; border-radius:10px; border-top:4px solid #f2c14e; background:#f1f4f5; color:#25292d; text-align:center; box-shadow:0 12px 35px #0005; }
+.street-race-place { margin:12px 0 8px; font-size:42px; font-weight:900; }
+.street-race-place span { font-size:16px; color:#607581; }
+.street-race-cash { font-size:24px; font-weight:800; }
+.street-race-result .training-reward-income { justify-content:center; margin-top:10px; }
+/* Paintable while the world is built in small batches. */
+.loading-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; background: #eef0ef; color: #26322f; pointer-events: auto;
+  font: 500 16px system-ui, sans-serif;
+}
+.loading-overlay[hidden] { display: none; }
+.loading-overlay progress { width: 200px; height: 6px; accent-color: #45665b; }
+.loading-overlay button { padding: 10px 24px; cursor: pointer; }

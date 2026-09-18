@@ -1,3 +1,4 @@
+import type { RaceResult } from "../racing/RaceManager";
 import { TRAINING_CATEGORIES, categoryIncome, sanitizeTrainingProgress, type TrainingReward, type TrainingContext, type TrainingProgress, type TrainingRegion, type TrainingCategoryId } from "../training/Training";
 import { GAME_CONFIG } from "../game/config";
 import { PassengerType, type PoliceCitation, type RideHistoryEntry, type RideResult, type RideTier } from "../game/types";
@@ -10,6 +11,8 @@ import { ProgressionStore } from "../progression/ProgressionStore";
 import { getUpgradeCost } from "../progression/UpgradeSystem";
 import { VEHICLE_CATALOG, getVehicleDefinition } from "../vehicles/VehicleCatalog";
 import type { PlayerProgression, PlayerUpgradeLevels, VehicleStatKey } from "../vehicles/VehicleTypes";
+import type { ChaseResult } from "../chase/ChaseRules";
+import type { PackageDeliveryResult } from "../delivery/PackageDeliveryManager";
 
 export class PlayerProfile {
   private moneyValue: number;
@@ -18,6 +21,14 @@ export class PlayerProfile {
   private racingLicenseOwnedValue: boolean;
   private bestRaceFinishesValue: Record<string, number>;
   private incomeRate = 0;
+  private taxiIncomeRate = 0;
+  private ambulanceIncomeRate = 0;
+  private policeChaseIncomeRate = 0;
+  private racingIncomeRate = 0;
+  private readonly settledRaces = new WeakSet<RaceResult>();
+  private readonly settledChases = new WeakSet<ChaseResult>();
+  private readonly settledAmbulanceJobs = new WeakSet<PackageDeliveryResult>();
+  private readonly settledRides = new WeakSet<RideResult>();
   trainingRevision = 0;
 
   configureTrainingRegions(regions: readonly TrainingRegion[]): void {
@@ -25,7 +36,9 @@ export class PlayerProfile {
     this.recalculateTrainingIncome();
   }
 
-  get passiveIncomePerSecond(): number { return this.incomeRate; }
+  get passiveIncomePerSecond(): number {
+    return this.taxiIncomeRate + this.ambulanceIncomeRate + this.policeChaseIncomeRate + this.racingIncomeRate + (GAME_CONFIG.gameplay.regionalTrainingEnabled ? this.incomeRate : 0);
+  }
 
   getTrainingCount(regionId: string, categoryId: TrainingCategoryId): number {
     return this.trainingProgress[regionId]?.[categoryId] ?? 0;
@@ -77,8 +90,8 @@ export class PlayerProfile {
   }
 
   accrueTrainingIncome(seconds: number): void {
-    if (!Number.isFinite(seconds) || seconds <= 0 || this.incomeRate <= 0) return;
-    this.moneyValue += this.incomeRate * seconds;
+    if (!Number.isFinite(seconds) || seconds <= 0 || this.passiveIncomePerSecond <= 0) return;
+    this.moneyValue += this.passiveIncomePerSecond * seconds;
     this.dirty = true;
   }
 
@@ -87,6 +100,43 @@ export class PlayerProfile {
     const reward = this.creditTraining(training);
     this.saveNow();
     return reward;
+  }
+
+  completeCurbsideAmbulanceJob(result: PackageDeliveryResult): void {
+    if (!result.curbside || this.settledAmbulanceJobs.has(result)) return;
+    this.settledAmbulanceJobs.add(result);
+    result.passiveIncomeGain = Math.round(finiteNonnegative(GAME_CONFIG.ambulanceDriver.passiveIncomePerDelivery, 0) * 1_000_000) / 1_000_000;
+    this.ambulanceIncomeRate = Math.round((this.ambulanceIncomeRate + result.passiveIncomeGain) * 1_000_000) / 1_000_000;
+    this.moneyValue += finiteNonnegative(result.payout, 0);
+    this.saveNow();
+  }
+
+  completePoliceChase(result: ChaseResult): void {
+    if (result.outcome !== "won" || this.settledChases.has(result)) return;
+    this.settledChases.add(result);
+    result.passiveIncomeGain = Math.round(finiteNonnegative(GAME_CONFIG.policeChase.passiveIncomePerWin, 0) * 1_000_000) / 1_000_000;
+    this.policeChaseIncomeRate = Math.round((this.policeChaseIncomeRate + result.passiveIncomeGain) * 1_000_000) / 1_000_000;
+    this.saveNow();
+  }
+
+  completeStreetRace(result: RaceResult): boolean {
+    if (this.settledRaces.has(result) || !isRaceFinish(result.finishPlace)
+      || !this.trainingRegionIds.has(result.regionId)) return false;
+    const reward = GAME_CONFIG.racing.finishRewards[result.finishPlace - 1];
+    if (!reward) return false;
+    this.settledRaces.add(result);
+    result.cashEarned = finiteNonnegative(reward.cash, 0);
+    result.passiveIncomeGain = Math.round(finiteNonnegative(reward.incomePerSecond, 0) * 1_000_000) / 1_000_000;
+    this.moneyValue += result.cashEarned;
+    this.racingIncomeRate = Math.round((this.racingIncomeRate + result.passiveIncomeGain) * 1_000_000) / 1_000_000;
+    const previous = this.getBestRaceFinish(result.regionId);
+    if (previous === null || result.finishPlace < previous) {
+      this.bestRaceFinishesValue[result.regionId] = result.finishPlace;
+      this.trainingRevision++;
+      // Preserve the legacy records, but street rewards never depend on their multiplier.
+    }
+    this.saveNow();
+    return true;
   }
 
   /** Keeps pre-v7 callers and old development utilities compatible during save migration. */
@@ -112,6 +162,10 @@ export class PlayerProfile {
 
   constructor(private readonly store = new ProgressionStore()) {
     const progression = sanitizeProgression(store.load());
+    this.taxiIncomeRate = progression.taxiPassiveIncomePerSecond;
+    this.ambulanceIncomeRate = progression.ambulancePassiveIncomePerSecond;
+    this.policeChaseIncomeRate = progression.policeChasePassiveIncomePerSecond;
+    this.racingIncomeRate = progression.racingPassiveIncomePerSecond;
     this.moneyValue = progression.money;
     this.trainingProgress = progression.trainingProgress;
     this.racingLicenseOwnedValue = progression.racingLicenseOwned;
@@ -185,12 +239,20 @@ export class PlayerProfile {
   }
 
   completeRide(result: RideResult, training?: TrainingContext): TrainingReward | null {
-    const reward = this.creditTraining(training);
+    if (this.settledRides.has(result)) return null;
+    this.settledRides.add(result);
+    const payout = finiteNonnegative(result.total, 0);
+    const reward = result.curbside ? null : this.creditTraining(training);
+    const incomeByStars = GAME_CONFIG.progression.taxiIncomePerSecondByStars;
+    const stars = Math.min(5, Math.max(1, Math.floor(finiteNonnegative(result.stars, 1)))) as keyof typeof incomeByStars;
+    result.passiveIncomeGain = result.curbside
+      ? Math.round(finiteNonnegative(incomeByStars[stars], 0) * 1_000_000) / 1_000_000 : 0;
+    this.taxiIncomeRate = Math.round((this.taxiIncomeRate + result.passiveIncomeGain) * 1_000_000) / 1_000_000;
     this.jailFreeCardsValue += Math.floor(finiteNonnegative(result.cardsEarned, 0));
     this.vehicleCouponsValue += Math.floor(finiteNonnegative(result.couponsEarned, 0));
     const freeUpgradeCreditsEarned = Math.floor(finiteNonnegative(result.freeUpgradeCreditsEarned, 0));
     this.freeUpgradeCreditsValue += freeUpgradeCreditsEarned;
-    this.moneyValue += Math.max(0, result.total);
+    this.moneyValue += payout;
     this.completedRidesValue += 1;
     const completedAt = Date.now();
     const historyEntry: RideHistoryEntry = {
@@ -362,6 +424,10 @@ export class PlayerProfile {
   private toProgression(): PlayerProgression {
     return {
       version: GAME_CONFIG.progression.saveVersion,
+      taxiPassiveIncomePerSecond: this.taxiIncomeRate,
+      ambulancePassiveIncomePerSecond: this.ambulanceIncomeRate,
+      policeChasePassiveIncomePerSecond: this.policeChaseIncomeRate,
+      racingPassiveIncomePerSecond: this.racingIncomeRate,
       trainingProgress: sanitizeTrainingProgress(this.trainingProgress),
       jailFreeCards: this.jailFreeCardsValue,
       vehicleCoupons: this.vehicleCouponsValue,
@@ -388,6 +454,10 @@ export class PlayerProfile {
 export function defaultProgression(): PlayerProgression {
   return {
     version: GAME_CONFIG.progression.saveVersion,
+    taxiPassiveIncomePerSecond: 0,
+    ambulancePassiveIncomePerSecond: 0,
+    policeChasePassiveIncomePerSecond: 0,
+    racingPassiveIncomePerSecond: 0,
     trainingProgress: {},
     jailFreeCards: 0,
     vehicleCoupons: 0,
@@ -408,7 +478,7 @@ function sanitizeProgression(value: unknown): PlayerProgression {
   const defaults = defaultProgression();
   if (!value || typeof value !== "object") return defaults;
   const source = value as Partial<PlayerProgression>;
-  if (![1, 2, 3, 4, 5, 6, 7, 8, GAME_CONFIG.progression.saveVersion].includes(source.version ?? -1)) return defaults;
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, GAME_CONFIG.progression.saveVersion].includes(source.version ?? -1)) return defaults;
   const knownIds = new Set(VEHICLE_CATALOG.map((vehicle) => vehicle.id));
   const owned = Array.isArray(source.ownedVehicleIds)
     ? [...new Set(source.ownedVehicleIds.filter((id): id is string => typeof id === "string" && knownIds.has(id)))]
@@ -432,6 +502,14 @@ function sanitizeProgression(value: unknown): PlayerProgression {
   return {
     version: GAME_CONFIG.progression.saveVersion,
     trainingProgress: sanitizeTrainingProgress(source.trainingProgress),
+    taxiPassiveIncomePerSecond: (source.version ?? 0) >= 10
+      ? Math.round(finiteNonnegative(source.taxiPassiveIncomePerSecond, 0) * 1_000_000) / 1_000_000 : 0,
+    policeChasePassiveIncomePerSecond: (source.version ?? 0) >= 12
+      ? Math.round(finiteNonnegative(source.policeChasePassiveIncomePerSecond, 0) * 1_000_000) / 1_000_000 : 0,
+    racingPassiveIncomePerSecond: (source.version ?? 0) >= 13
+      ? Math.round(finiteNonnegative(source.racingPassiveIncomePerSecond, 0) * 1_000_000) / 1_000_000 : 0,
+    ambulancePassiveIncomePerSecond: (source.version ?? 0) >= 11
+      ? Math.round(finiteNonnegative(source.ambulancePassiveIncomePerSecond, 0) * 1_000_000) / 1_000_000 : 0,
     jailFreeCards: Math.floor(finiteNonnegative(source.jailFreeCards, 0)),
     vehicleCoupons: Math.floor(finiteNonnegative(source.vehicleCoupons, 0)),
     freeUpgradeCredits: Math.floor(finiteNonnegative(source.freeUpgradeCredits, 0)),
@@ -473,6 +551,8 @@ function sanitizeRideHistory(value: unknown): RideHistoryEntry[] {
     ) continue;
     entries.push({
       id: entry.id,
+      curbside: entry.curbside === true ? true : undefined,
+      passiveIncomeGain: finiteNonnegative(entry.passiveIncomeGain, 0),
       completedAt: finiteNonnegative(entry.completedAt, 0),
       passengerName: entry.passengerName,
       passengerType: entry.passengerType as PassengerType,

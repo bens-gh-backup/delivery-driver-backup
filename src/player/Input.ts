@@ -2,12 +2,15 @@ import { GAME_CONFIG } from "../game/config";
 
 export class Input {
   private readonly keys = new Set<string>();
+  private raceEntryRequested = false;
+  private readonly onBlur = () => { this.keys.clear(); this.raceEntryRequested = false; this.resetDrivingState(); };
   private steeringValue = 0;
   private throttleValue = 0;
   private brakeValue = 0;
   private readonly onKeyDown = (event: KeyboardEvent) => {
     this.keys.add(event.code);
-    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "KeyP", "KeyM"].includes(event.code)) {
+    if (event.code === "KeyE" && !event.repeat) this.raceEntryRequested = true;
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "KeyP", "KeyM", "KeyE"].includes(event.code)) {
       event.preventDefault();
     }
   };
@@ -18,6 +21,7 @@ export class Input {
   constructor() {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.onBlur);
   }
 
   get steering(): number {
@@ -60,6 +64,12 @@ export class Input {
     this.brakeValue = 0;
   }
 
+  consumeRaceEnter(): boolean {
+    const requested = this.raceEntryRequested;
+    this.raceEntryRequested = false;
+    return requested;
+  }
+
   consumeReset(): boolean {
     if (!this.keys.has("KeyR")) {
       return false;
@@ -95,6 +105,7 @@ export class Input {
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onBlur);
   }
 
   private moveTowards(current: number, target: number, maxDelta: number): number {

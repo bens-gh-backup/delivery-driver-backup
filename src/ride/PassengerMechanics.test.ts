@@ -44,10 +44,10 @@ describe("passenger mechanics", () => {
     timid.speed(50); timid.ride.update(1, timid.player, true);
     expect(timid.ride.satisfaction).toBe(100);
     timid.speed(51); timid.ride.update(1, timid.player, true);
-    expect(timid.ride.satisfaction).toBe(98);
+    expect(timid.ride.satisfaction).toBe(96);
     timid.ride.registerTrafficCollision(20);
-    expect(timid.ride.satisfaction).toBe(58);
-    expect(timid.ride.tipReductionPercent).toBeCloseTo(42.58, 2);
+    expect(timid.ride.satisfaction).toBe(56);
+    expect(timid.ride.tipReductionPercent).toBeCloseTo(44.56, 2);
     const hurried = fixture(PassengerType.Hurried);
     hurried.ride.update(4.5, hurried.player, true);
     expect(hurried.ride.satisfaction).toBe(100);
@@ -60,17 +60,43 @@ describe("passenger mechanics", () => {
     expect(hurried.ride.satisfaction).toBe(59);
   });
 
-  it.each([[PassengerType.Lawful, "redLight", 5], [PassengerType.Careful, "opposingLane", 10]] as const)(
-    "%s subtracts starting-tip dollars, not a compounded percentage", (type, event, loss) => {
+  it.each([[PassengerType.Lawful, "redLight"], [PassengerType.Careful, "opposingLane"]] as const)(
+    "%s loses two displayed stars per forbidden maneuver, with matching tip loss", (type, event) => {
       const f = fixture(type);
-      f.ride.update(20, f.player, true); // ordinary tip is now $45
-      f.ride.registerDrivingEvent(event); f.ride.registerDrivingEvent(event);
-      expect(f.ride.getCurrentTip()).toBeCloseTo(45 - loss * 2);
+      f.ride.update(20, f.player, true); // Ordinary tip starts at $45 after time decay.
+      f.ride.registerDrivingEvent(event);
+      expect(f.ride.getStars()).toBe(3);expect(f.ride.getCurrentTip()).toBeCloseTo(27);
+      expect(f.ride.traitTipDeduction).toBeCloseTo(18);
+      f.ride.registerDrivingEvent(event);
+      expect(f.ride.getStars()).toBe(1);expect(f.ride.getCurrentTip()).toBeCloseTo(9);
       for (let i = 0; i < 20; i++) f.ride.registerDrivingEvent(event);
-      expect(f.ride.getCurrentTip()).toBe(0);
-      expect(f.ride.getStars()).toBe(5);
+      expect(f.ride.getCurrentTip()).toBe(0);expect(f.ride.getStars()).toBe(1);
     },
   );
+
+  it("still removes two stars after earlier driving penalties and ignores unrelated traits", () => {
+    const f=fixture(PassengerType.Lawful);
+    f.ride.update(0,f.player,true,15); // 30% ordinary-tip loss, four stars.
+    expect(f.ride.getStars()).toBe(4);
+    f.ride.registerDrivingEvent("redLight");expect(f.ride.getStars()).toBe(2);
+    expect(f.ride.getCurrentTip()).toBeCloseTo(15);
+    const normal=fixture(PassengerType.Normal);
+    normal.ride.registerDrivingEvent("redLight");normal.ride.registerForbiddenTurn();
+    expect(normal.ride.getStars()).toBe(5);expect(normal.ride.getCurrentTip()).toBe(50);
+  });
+
+  it("uses the configurable trait penalty, and resets it before the next passenger", () => {
+    const original=GAME_CONFIG.ride.satisfaction.traitViolationStars;
+    try {
+      Object.assign(GAME_CONFIG.ride.satisfaction,{traitViolationStars:1});
+      const f=fixture(PassengerType.Lawful);
+      f.ride.registerDrivingEvent("redLight");
+      expect(f.finish()).toMatchObject({stars:4,tip:40});
+      f.ride.acceptRide("taxi","test");f.player.root.position.setAll(0);
+      f.ride.update(0,f.player,true);
+      expect(f.ride.getStars()).toBe(5);expect(f.ride.traitTipDeduction).toBe(0);
+    } finally {Object.assign(GAME_CONFIG.ride.satisfaction,{traitViolationStars:original});}
+  });
 
   it("keeps bonuses fixed through time, violations, and satisfaction loss", () => {
     const f = fixture(PassengerType.ThrillSeeker);
@@ -176,17 +202,18 @@ describe("passenger mechanics", () => {
     const observed = fixture(PassengerType.Shady);
     observed.ride.registerPoliceEvent("violationObserved");
     expect(observed.ride.pendingBonus?.eligible).toBe(false);
-    expect(observed.ride.getCurrentTip()).toBe(50);
+    expect(observed.ride.getCurrentTip()).toBe(30);
+    expect(observed.ride.getStars()).toBe(3);
     observed.ride.registerPoliceEvent("pursuitEscaped");
-    expect(observed.finish()).toMatchObject({bonusTip:0,tip:50});
+    expect(observed.finish()).toMatchObject({bonusTip:0,tip:30,stars:3});
   });
 
-  it("loses Compulsive's bonus permanently but preserves ordinary tips", () => {
+  it("penalizes distinct Compulsive turns and removes its bonus permanently", () => {
     const f = fixture(PassengerType.Compulsive);
     expect(f.ride.pendingBonus?.eligible).toBe(true);
     f.ride.registerForbiddenTurn(); f.ride.registerForbiddenTurn();
     expect(f.ride.pendingBonus?.eligible).toBe(false);
-    expect(f.finish()).toMatchObject({bonusTip:0,tip:50});
+    expect(f.finish()).toMatchObject({bonusTip:0,tip:10,stars:1});
     const straight = fixture(PassengerType.Compulsive);
     expect(straight.finish()).toMatchObject({bonusTip:30,tip:80});
   });
@@ -263,8 +290,60 @@ describe("passenger mechanics", () => {
     const start=150*.5;
     expect(lawful.ride.getCurrentTip()).toBeCloseTo(start);
     lawful.ride.registerDrivingEvent("redLight");
-    expect(lawful.ride.getCurrentTip()).toBeCloseTo(start*.9);
+    expect(lawful.ride.getCurrentTip()).toBeCloseTo(start*.6);
     expect(lawful.finish()).toMatchObject({baseFare:150});
+  });
+
+  it("weights actual speeding points 2x and sidewalk/wrong-way points 4x, with a pickup baseline", () => {
+    const f=fixture(PassengerType.Normal,"taxi",false);
+    const totals={speeding:10,wrongSide:20,sidewalk:30,total:60};
+    f.ride.update(0,f.player,true,totals);
+    expect(f.ride.getCurrentTip()).toBe(50);expect(f.ride.getStars()).toBe(5);
+    totals.speeding+=1;totals.total+=1;
+    f.ride.update(0,f.player,true,totals);
+    expect(f.ride.getCurrentTip()).toBeCloseTo(48); // 2% per point, times two.
+    totals.wrongSide+=1;totals.sidewalk+=1;totals.total+=2;
+    f.ride.update(0,f.player,true,totals);
+    expect(f.ride.getCurrentTip()).toBeCloseTo(40); // Each adds 8%, not 2%.
+    expect(f.ride.getStars()).toBe(4);
+    expect(totals).toEqual({speeding:11,wrongSide:21,sidewalk:31,total:63});
+  });
+
+  it("applies Shady's two-star breach once when observation becomes a pursuit", () => {
+    const f=fixture(PassengerType.Shady);
+    f.ride.registerPoliceEvent("violationObserved");f.ride.registerPoliceEvent("violationObserved");
+    f.ride.registerPursuit(true);f.ride.registerPursuit(true);
+    expect(f.ride.getStars()).toBe(3);expect(f.finish()).toMatchObject({stars:3,tip:0});
+    const direct=fixture(PassengerType.Shady);direct.ride.registerPursuit(true);
+    expect(direct.ride.getStars()).toBe(3);
+  });
+
+  it.each([PassengerType.OffGrid,PassengerType.Psychopath,PassengerType.ThrillSeeker,
+    PassengerType.RunningOnFumes,PassengerType.DemolitionDerbyFan])(
+    "checks an unmet %s request once at drop-off, not prematurely while driving", type => {
+      const f=fixture(type);expect(f.ride.getStars()).toBe(5);
+      expect(f.finish()).toMatchObject({stars:3,tip:30,bonusTip:0});
+      expect(f.profile.completedRides).toBe(1);
+      f.finish();expect(f.profile.completedRides).toBe(1);
+    },
+  );
+
+  it("keeps fulfilled requests at five stars and lets config restore optional bonuses", () => {
+    const station=fixture(PassengerType.OffGrid);station.ride.registerStationStop(true);
+    expect(station.finish()).toMatchObject({stars:5,tip:80});
+    const escape=fixture(PassengerType.Psychopath);escape.ride.registerPoliceEvent("pursuitEscaped");
+    expect(escape.finish()).toMatchObject({stars:5,tip:250});
+    const fuel=fixture(PassengerType.RunningOnFumes);fuel.ride.registerVehicleCondition(.4,0);
+    expect(fuel.finish()).toMatchObject({stars:5,tip:100});
+    const damage=fixture(PassengerType.DemolitionDerbyFan);damage.ride.registerVehicleCondition(1,.4);
+    expect(damage.finish()).toMatchObject({stars:5,tip:130});
+    const yellow=fixture(PassengerType.ThrillSeeker);yellow.ride.registerDrivingEvent("yellowIntersection");
+    expect(yellow.finish()).toMatchObject({stars:5,tip:100});
+    const original=GAME_CONFIG.ride.archetypes.penalizeMissedBonusRequests;
+    try {
+      Object.assign(GAME_CONFIG.ride.archetypes,{penalizeMissedBonusRequests:false});
+      expect(fixture(PassengerType.OffGrid).finish()).toMatchObject({stars:5,tip:50});
+    } finally {Object.assign(GAME_CONFIG.ride.archetypes,{penalizeMissedBonusRequests:original});}
   });
 
 });

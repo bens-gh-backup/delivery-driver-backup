@@ -381,6 +381,14 @@ export class PoliceManager {
     return null;
   }
 
+  /** Starting/ending police duty discards observation meters, never an active pursuit. */
+  resetDutyObservations(): void {
+    if (this.activePursuit) return;
+    this.clearPursuit();
+    this.rideEvents.clear();
+    this.updateAccumulator = 0;
+  }
+
   private clearPursuit(): void {
     if (this.activePursuit) {
       this.officers.find((officer) => officer.id === this.activePursuit?.officerId)?.clearPursuit();

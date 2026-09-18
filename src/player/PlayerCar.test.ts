@@ -18,6 +18,27 @@ describe("damageStatMultiplier", () => {
 });
 
 describe("PlayerCar vehicle configuration", () => {
+  it("lets collision overspeed decay instead of clipping it or sustaining it with throttle", () => {
+    const engine = new NullEngine(); const scene = new Scene(engine);
+    const car = new PlayerCar(scene, [{ position: Vector3.Zero(), ix: 0, iz: 0 }]);
+    car.heading = 0; car.syncCollisionBody(0);
+    const speed = car.getMaxForwardSpeed() + 40;
+    Object.assign(car.collisionBody, { velocityX: 0, velocityZ: speed,
+      angularVelocity: 0, changed: true, impulse: 40 });
+    car.applyCollisionBody();
+    const world = { isOnSidewalk: () => false, getNearbyColliders: () => {} } as unknown as WorldQuery;
+    const input = { throttle: 1, brake: 0, steering: 0, consumeReset: () => false, updateDriving: () => {} } as unknown as Input;
+    car.update(1 / 60, input, world);
+    expect(car.getVelocityZ()).toBeGreaterThan(car.getMaxForwardSpeed() + 30);
+    expect(car.getVelocityZ()).toBeLessThan(speed);
+    for (let i = 0; i < 120; i++) {
+      const previous = car.getVelocityZ();
+      car.update(1 / 60, input, world);
+      expect(car.getVelocityZ()).toBeLessThan(previous);
+    }
+    scene.dispose(); engine.dispose();
+  });
+
   it("starts parked curbside halfway between city intersections", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
@@ -44,7 +65,9 @@ describe("PlayerCar vehicle configuration", () => {
     const run = (steering: number) => {
       const car = new PlayerCar(scene, spawn);
       car.heading = 0;
-      car.applyPursuitImpact({ damage: 0.25, velocityX: 10, velocityZ: 25, yawRate: -3.4 });
+      car.syncCollisionBody(0);
+      Object.assign(car.collisionBody, { velocityX: 10, velocityZ: 25, angularVelocity: -3.4, changed: true, impulse: 25 });
+      car.applyCollisionBody();
       const input = { throttle: 1, brake: 0, steering, consumeReset: () => false, updateDriving: () => {} } as unknown as Input;
       for (let i = 0; i < 60; i++) car.update(1 / 60, input, world);
       return { car, spin: Math.abs(car.heading) };

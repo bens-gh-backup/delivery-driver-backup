@@ -6,6 +6,9 @@ import { GAME_CONFIG } from "../game/config";
 import { createLowPolyVehicleMesh } from "../vehicles/VehicleMeshFactory";
 import { clamp, normalizeAngle } from "../utils/math";
 import type { RaceCourse, RacePoint } from "./RaceCourse";
+import { beginBodyStep, createVehicleBody, endBodyStep, setBodySize, type VehicleBody } from "../physics/VehicleBody";
+import { NpcRecovery, type RecoveryVehicle } from "../physics/NpcRecovery";
+import type { WorldQuery } from "../world/WorldQuery";
 import type { RacerProgress } from "./RaceProgress";
 
 export interface RaceCarStats { topSpeed: number; acceleration: number; turning: number; braking: number; color: string; }
@@ -13,6 +16,9 @@ interface NavigationPoint extends RacePoint { checkpointIndex: number; corner: b
 
 export class RaceCar {
   readonly mesh: Mesh;
+  readonly collisionBody: VehicleBody;
+  private collisionMotion = false;
+  readonly recovery = new NpcRecovery();
   readonly progress: RacerProgress;
   readonly width = GAME_CONFIG.player.width;
   readonly length = GAME_CONFIG.player.length;
@@ -29,14 +35,10 @@ export class RaceCar {
 
   constructor(scene: Scene, readonly id: number, private readonly course: RaceCourse,
     readonly stats: RaceCarStats, position: RacePoint, heading: number) {
-    this.material = new StandardMaterial(`race-car-material-${id}`, scene);
-    this.material.diffuseColor = Color3.White();
-    this.mesh = createLowPolyVehicleMesh(scene, `race-car-${id}`, this.material, {
-      bodyWidth: this.width, bodyLength: this.length, bodyHeight: 1.8,
-      cabinWidth: this.width * .8, cabinLength: this.length * .44, cabinHeight: 1.4,
-      bodyColor: Color3.FromHexString(stats.color),
-    });
-    this.material.freeze();
+    this.collisionBody = createVehicleBody(id);
+    setBodySize(this.collisionBody, this.width, this.length);
+    const visual = createRaceCarVisual(scene, `race-car-${id}`, stats.color);
+    this.material = visual.material; this.mesh = visual.mesh;
     this.mesh.position.set(position.x, .9, position.z);
     this.mesh.rotation.y = heading;
     this.progress = { id, checkpointIndex: 0, finishTime: null, position: { ...position } };
@@ -44,7 +46,33 @@ export class RaceCar {
     this.laneOffset = ((id - 1) % 3 - 1) * GAME_CONFIG.racing.grid.lateralSpacing;
   }
 
-  update(dt: number): void {
+  update(dt: number, world?: WorldQuery, vehicles?: readonly RecoveryVehicle[], player?: VehicleBody): void {
+    const body = this.collisionBody;
+    beginBodyStep(body, this.mesh.position.x, this.mesh.position.z, this.mesh.rotation.y);
+    this.updateDriving(dt, world, vehicles, player);
+    body.dynamic = this.collisionMotion;
+    if (this.recoveredThisStep) {
+      endBodyStep(body, this.mesh.position.x, this.mesh.position.z, this.mesh.rotation.y, 0, 0, 0, 0);
+      return;
+    }
+    const vx = this.collisionMotion ? body.velocityX : dt > 0 ? (this.mesh.position.x - body.startX) / dt : 0;
+    const vz = this.collisionMotion ? body.velocityZ : dt > 0 ? (this.mesh.position.z - body.startZ) / dt : 0;
+    const yaw = this.collisionMotion ? body.angularVelocity : dt > 0 ? normalizeAngle(this.mesh.rotation.y - body.startHeading) / dt : 0;
+    endBodyStep(body, this.mesh.position.x, this.mesh.position.z, this.mesh.rotation.y, vx, vz, yaw, dt);
+  }
+
+  applyCollisionBody(): void {
+    const body = this.collisionBody;
+    if (!body.changed) return;
+    this.mesh.position.x = body.x; this.mesh.position.z = body.z; this.mesh.rotation.y = body.heading;
+    this.speed = Math.hypot(body.velocityX, body.velocityZ);
+    if (body.impulse > .001) {
+      this.recovery.impact(body);
+      this.collisionMotion = true;
+    }
+  }
+
+  private updateDriving(dt: number, world?: WorldQuery, vehicles?: readonly RecoveryVehicle[], player?: VehicleBody): void {
     this.recoveredThisStep = false;
     if (this.progress.finishTime !== null) { this.updateFinishExit(dt); return; }
     const position = this.mesh.position;
@@ -55,8 +83,19 @@ export class RaceCar {
     } else this.staleSeconds += dt;
     const previous = this.progress.checkpointIndex > 0 ? this.course.checkpoints[this.progress.checkpointIndex - 1] : this.course.start;
     const offCourse = distanceToSegment(position, previous, targetCheckpoint);
-    if (this.staleSeconds >= GAME_CONFIG.racing.ai.recoverySeconds || offCourse > GAME_CONFIG.racing.ai.offCourseDistance) {
+    if (!this.collisionMotion && (this.staleSeconds >= GAME_CONFIG.racing.ai.recoverySeconds || offCourse > GAME_CONFIG.racing.ai.offCourseDistance)) {
       this.recover(); return;
+    }
+    // A shove can carry a racer past several curve samples or a checkpoint. Do not
+    // steer back toward a stale sample, and never award progress for this retargeting.
+    if (this.collisionMotion) {
+      while (this.navigationIndex + 1 < this.navigation.length) {
+        const point = this.navigation[this.navigationIndex];
+        if (point.checkpointIndex >= this.progress.checkpointIndex
+          && Math.hypot(this.targetX(point) - position.x, this.targetZ(point) - position.z)
+            > GAME_CONFIG.vehicleCollisions.recoveryWaypointRadius) break;
+        this.navigationIndex++;
+      }
     }
     let target = this.navigation[this.navigationIndex];
     if (!target) { this.recover(); return; }
@@ -65,6 +104,18 @@ export class RaceCar {
     const brakingDistance = target.corner ? remaining : remaining + target.distanceToCorner;
     const desiredSpeed = Math.min(this.stats.topSpeed,
       Math.sqrt(cornerSpeed * cornerSpeed + 2 * this.stats.braking * Math.max(0, brakingDistance - GAME_CONFIG.racing.ai.lookahead)));
+    if (this.collisionMotion) {
+      const body = this.collisionBody;
+      body.x = position.x; body.z = position.z; body.heading = this.mesh.rotation.y;
+      const settled = this.recovery.drive(body, dt, { x: this.targetX(target), z: this.targetZ(target),
+        speed: desiredSpeed, handling: this.stats }, world, vehicles, player);
+      position.x = body.x; position.z = body.z; this.mesh.rotation.y = body.heading;
+      this.speed = Math.hypot(body.velocityX, body.velocityZ);
+      if (settled) { this.collisionMotion = false; this.staleSeconds = 0; this.recovery.reset(); }
+      // Count failed maneuvering, never the deliberate pause or a legitimate turnaround.
+      else if (this.recovery.noProgressSeconds >= GAME_CONFIG.vehicleCollisions.recoveryStuckSeconds) this.recover();
+      return;
+    }
     const rate = desiredSpeed < this.speed ? this.stats.braking : this.stats.acceleration;
     this.speed += clamp(desiredSpeed - this.speed, -rate * dt, rate * dt);
     let movement = this.speed * dt;
@@ -125,6 +176,8 @@ export class RaceCar {
   }
 
   recover(): void {
+    this.collisionMotion = false; this.recovery.reset();
+    this.collisionBody.velocityX = this.collisionBody.velocityZ = this.collisionBody.angularVelocity = 0;
     const index = this.progress.checkpointIndex;
     const anchor = index > 0 ? this.course.checkpoints[index - 1] : this.course.start;
     const target = this.course.checkpoints[index];
@@ -183,4 +236,18 @@ function distanceToSegment(point: RacePoint, a: RacePoint, b: RacePoint): number
   const dx = b.x - a.x, dz = b.z - a.z, lengthSquared = dx * dx + dz * dz;
   const t = lengthSquared > 0 ? clamp(((point.x - a.x) * dx + (point.z - a.z) * dz) / lengthSquared, 0, 1) : 0;
   return Math.hypot(point.x - a.x - dx * t, point.z - a.z - dz * t);
+}
+
+/** Identical silhouettes and colors for the waiting grid and actual opponents. */
+export function createRaceCarVisual(scene: Scene, name: string, color: string): {mesh: Mesh; material: StandardMaterial} {
+  const material = new StandardMaterial(`${name}-material`, scene);
+  material.diffuseColor = Color3.White();
+  const width = GAME_CONFIG.player.width, length = GAME_CONFIG.player.length;
+  const mesh = createLowPolyVehicleMesh(scene, name, material, {
+    bodyWidth: width, bodyLength: length, bodyHeight: 1.8,
+    cabinWidth: width * .8, cabinLength: length * .44, cabinHeight: 1.4,
+    bodyColor: Color3.FromHexString(color),
+  });
+  material.freeze();
+  return { mesh, material };
 }

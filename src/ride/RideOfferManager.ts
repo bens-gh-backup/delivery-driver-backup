@@ -1,31 +1,11 @@
 import type { TrainingRegion, TrainingCategoryId } from "../training/Training";
-import { passengerFareMultiplier, pickPassengerType } from "./PassengerArchetypes";
+import { createRideOffer } from "./RideFactory";
 import { GAME_CONFIG } from "../game/config";
-import { PassengerType, type DeliveryPoint, type RideOffer, type RideTier } from "../game/types";
-import { distanceXZ, randomBetween, randomSeed, seededRandom } from "../utils/math";
+import { type DeliveryPoint, type RideOffer, type RideTier } from "../game/types";
+import { distanceXZ, randomSeed, seededRandom } from "../utils/math";
 import type { PlayerCar } from "../player/PlayerCar";
 import type { MissionLicenseDefinition } from "../missions/MissionLicenseCatalog";
 
-const FIRST_NAMES = [
-  "Amanda",
-  "Marcus",
-  "Daniel",
-  "Sarah",
-  "Chris",
-  "Nina",
-  "Sophie",
-  "Jordan",
-  "Priya",
-  "Leo",
-  "Maya",
-  "Ethan",
-  "Riley",
-  "Taylor",
-  "Dante",
-  "Mina",
-];
-
-const LAST_INITIALS = ["A.", "B.", "C.", "D.", "G.", "K.", "L.", "M.", "R.", "S.", "T.", "V.", "W."];
 const OFFER_TIERS: RideTier[] = ["SHORT", "MEDIUM", "LONG"];
 
 export class RideOfferManager {
@@ -94,36 +74,10 @@ export class RideOfferManager {
 
   private generateOffer(tier: RideTier, ageSeconds = 0): RideOffer {
     const pickupPoint = this.pickPickupPoint();
-    const destinationPoint = this.pickDestination(pickupPoint, tier);
-    const pickupDistance = distanceXZ(this.player.root.position, pickupPoint.position) * GAME_CONFIG.ride.metersPerWorldUnit;
-    const tripDistance = distanceXZ(pickupPoint.position, destinationPoint.position) * GAME_CONFIG.ride.metersPerWorldUnit;
-    const fareMultiplier = randomBetween(
-      this.rng,
-      GAME_CONFIG.ride.fare.randomMultiplierMin,
-      GAME_CONFIG.ride.fare.randomMultiplierMax,
-    );
-    const effectiveDistance = tripDistance + pickupDistance * GAME_CONFIG.ride.fare.pickupDistanceWeight;
-    const standardBaseFare = (GAME_CONFIG.ride.fare.baseFare + effectiveDistance * GAME_CONFIG.ride.fare.ratePerMeter)
-      * fareMultiplier;
-    const passengerType = this.pickPassengerType();
-    const baseFare = standardBaseFare * this.category.fareMultiplier * passengerFareMultiplier(passengerType);
-
-    return {
-      id: `${this.region?.id ?? "global"}-${this.category.id}-ride-${this.nextId++}`,
-      training: this.region ? Object.freeze({ regionId: this.region.id, categoryId: this.category.id as TrainingCategoryId }) : undefined,
-      missionCategoryId: this.category.id,
-      categoryFareMultiplier: this.category.fareMultiplier,
-      tier,
-      passengerName: this.generateName(),
-      passengerType,
-      pickupPoint,
-      destinationPoint,
-      pickupDistance,
-      tripDistance,
-      fareMultiplier,
-      baseFare,
-      ageSeconds,
-    };
+    return createRideOffer(this.points, pickupPoint, tier, this.category, this.rng,
+      `${this.region?.id ?? "global"}-${this.category.id}-ride-${this.nextId++}`,
+      distanceXZ(this.player.root.position, pickupPoint.position) * GAME_CONFIG.ride.metersPerWorldUnit,
+      this.region ? { regionId: this.region.id, categoryId: this.category.id as TrainingCategoryId } : undefined, ageSeconds);
   }
 
   private pickPickupPoint(): DeliveryPoint {
@@ -140,36 +94,6 @@ export class RideOfferManager {
       const pointDistance = distanceXZ(this.player.root.position, point.position);
       return pointDistance < nearestDistance ? point : nearest;
     });
-  }
-
-  private pickDestination(pickup: DeliveryPoint, tier: RideTier): DeliveryPoint {
-    const band = this.bandFor(tier);
-    const candidates = this.points.filter((point) => {
-      const distance = distanceXZ(point.position, pickup.position) * GAME_CONFIG.ride.metersPerWorldUnit;
-      return point !== pickup && distance >= band.minDistance && distance <= band.maxDistance;
-    });
-    if (candidates.length > 0) {
-      return candidates[Math.floor(this.rng() * candidates.length)];
-    }
-
-    const targetDistance = (band.minDistance + band.maxDistance) / 2;
-    return this.points
-      .filter((point) => point !== pickup)
-      .reduce((best, point) => {
-        const bestDistance = Math.abs(distanceXZ(best.position, pickup.position) * GAME_CONFIG.ride.metersPerWorldUnit - targetDistance);
-        const pointDistance = Math.abs(distanceXZ(point.position, pickup.position) * GAME_CONFIG.ride.metersPerWorldUnit - targetDistance);
-        return pointDistance < bestDistance ? point : best;
-      });
-  }
-
-  private generateName(): string {
-    const first = FIRST_NAMES[Math.floor(this.rng() * FIRST_NAMES.length)];
-    const last = LAST_INITIALS[Math.floor(this.rng() * LAST_INITIALS.length)];
-    return `${first} ${last}`;
-  }
-
-  private pickPassengerType(): PassengerType {
-    return pickPassengerType(this.rng);
   }
 
   refreshPickupDistances(): void {
@@ -198,9 +122,4 @@ export class RideOfferManager {
     return candidates[Math.floor(this.rng() * candidates.length)];
   }
 
-  private bandFor(tier: RideTier): { minDistance: number; maxDistance: number } {
-    if (tier === "SHORT") return GAME_CONFIG.ride.tripTiers.short;
-    if (tier === "MEDIUM") return GAME_CONFIG.ride.tripTiers.medium;
-    return GAME_CONFIG.ride.tripTiers.long;
-  }
 }

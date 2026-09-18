@@ -1,5 +1,6 @@
 import { GAME_CONFIG } from "../game/config";
 import type { Town } from "../world/Town";
+import { isDevelopedBlock } from "../world/CityDistricts";
 
 export interface RacePoint { x: number; z: number; }
 export interface RaceCourse {
@@ -20,6 +21,7 @@ export function createRaceCourses(
   const result = new Map<string, RaceCourse>();
   const xs = town.roadPositionsX, zs = town.roadPositionsZ;
   for (let bz = 0; bz < zs.length - 1; bz++) for (let bx = 0; bx < xs.length - 1; bx++) {
+    if (!isDevelopedBlock(bx, bz, xs.length - 1, zs.length - 1)) continue;
     let best: { nodes: RacePoint[]; edge: number; length: number; score: number; inward: RacePoint } | null = null;
     for (let left = 0; left <= bx; left++) for (let right = bx + 1; right < xs.length; right++) {
       for (let bottom = 0; bottom <= bz; bottom++) for (let top = bz + 1; top < zs.length; top++) {

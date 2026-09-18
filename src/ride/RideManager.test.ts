@@ -132,6 +132,7 @@ describe("RideManager", () => {
 
     rides.update(0, player, true, 100);
     expect(rides.violationTipPenaltyPercent).toBe(100);
+    expect(rides.getStars()).toBe(1);
     expect(rides.getCurrentTip()).toBe(0);
 
     player.root.position.copyFrom(offer.destinationPoint.position);

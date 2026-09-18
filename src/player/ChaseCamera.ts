@@ -33,15 +33,16 @@ export class ChaseCamera {
     this.player.getTravelDirectionToRef(this.travelDirection);
     Vector3.LerpToRef(this.headingForward, this.travelDirection, this.config.velocityInfluence, this.forward);
     this.forward.normalize();
+    const framing = this.player.isAmbulance ? this.config.ambulance : this.config;
     this.desiredPosition.set(
-      this.player.root.position.x - this.forward.x * this.config.distance,
-      this.player.root.position.y + this.config.height,
-      this.player.root.position.z - this.forward.z * this.config.distance,
+      this.player.root.position.x - this.forward.x * framing.distance,
+      this.player.root.position.y + framing.height,
+      this.player.root.position.z - this.forward.z * framing.distance,
     );
     this.desiredTarget.set(
-      this.player.root.position.x + this.forward.x * this.config.lookAhead,
+      this.player.root.position.x + this.forward.x * framing.lookAhead,
       this.player.root.position.y + 2,
-      this.player.root.position.z + this.forward.z * this.config.lookAhead,
+      this.player.root.position.z + this.forward.z * framing.lookAhead,
     );
 
     Vector3.LerpToRef(this.camera.position, this.desiredPosition, damping(deltaTime, this.config.positionDamping), this.camera.position);

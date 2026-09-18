@@ -7,9 +7,11 @@ export const raceTown = {
   roadPositionsZ: Array.from({ length: 7 }, (_, i) => (i - 3) * 425),
 };
 describe("regional courses", () => {
-  it("generates 36 deterministic closed road routes that leave their home region", () => {
+  it("generates deterministic closed road routes for the 34 developed blocks, excluding parks", () => {
     const courses = createRaceCourses(raceTown);
-    expect(courses.size).toBe(36);
+    expect(courses.size).toBe(34);
+    expect(courses.has("block-5-2")).toBe(false);
+    expect(courses.has("block-5-3")).toBe(false);
     expect([...createRaceCourses(raceTown)]).toEqual([...courses]);
     for (const course of courses.values()) {
       const [, bxString, bzString] = course.regionId.split("-");

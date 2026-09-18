@@ -3,6 +3,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Scene } from "@babylonjs/core/scene";
 import { describe, expect, it } from "vitest";
 import { GAME_CONFIG } from "../game/config";
+import { createVehicleBody, beginBodyStep, endBodyStep, setBodySize } from "../physics/VehicleBody";
 import type { PlayerCar } from "../player/PlayerCar";
 import { RaceManager } from "./RaceManager";
 import { RaceCar } from "./RaceCar";
@@ -13,11 +14,44 @@ const town = { roadPositionsX: Array.from({ length: 7 }, (_, i) => i * 425), roa
 function playerStub(): PlayerCar {
   const player = { root: { position: Vector3.Zero() }, heading: 0, vehicleWidth: 5.8, vehicleLength: 10.2,
     teleportTo(x: number, z: number, heading: number) { this.root.position.set(x, .9, z); this.heading = heading; },
-    applyTrafficCollision(nx: number, nz: number, depth: number) { this.root.position.x += nx * depth; this.root.position.z += nz * depth; } };
+    collisionBody: createVehicleBody(-1),
+    syncCollisionBody(_dt: number) {
+      const b = this.collisionBody;
+      setBodySize(b, this.vehicleWidth, this.vehicleLength);
+      beginBodyStep(b, this.root.position.x, this.root.position.z, this.heading);
+      endBodyStep(b, this.root.position.x, this.root.position.z, this.heading, 0, 0, 0, 0);
+    },
+    applyCollisionBody() {
+      this.root.position.x = this.collisionBody.x; this.root.position.z = this.collisionBody.z;
+      this.heading = this.collisionBody.heading;
+    } };
   return player as unknown as PlayerCar;
 }
 
 describe("race lifecycle and assisted AI", () => {
+  it("recovers a racer pinned against an obstacle even when repeated contacts refresh its tire slide", () => {
+    const engine = new NullEngine(); const scene = new Scene(engine);
+    const course = createRaceCourses(town).get("block-2-2")!;
+    const car = new RaceCar(scene, 1, course, GAME_CONFIG.racing.racers[0], course.start, course.heading);
+    // An immovable obstacle prevents progress and delivers a fresh response each frame.
+    const blocked = { x: course.start.x + 60, z: course.start.z + 60 };
+    let recovered = false;
+    for (let frame = 0; frame < (GAME_CONFIG.vehicleCollisions.recoveryStuckSeconds + 1) * 60; frame++) {
+      Object.assign(car.collisionBody, { x: blocked.x, z: blocked.z, heading: course.heading,
+        velocityX: 0, velocityZ: 0, angularVelocity: 0, changed: true, impulse: 5 });
+      car.applyCollisionBody(); car.update(1 / 60);
+      if (car.recoveredThisStep) { recovered = true; break; }
+    }
+    expect(recovered).toBe(true);
+    expect(car.progress.checkpointIndex).toBe(0);
+    expect(car.mesh.position.x).toBe(course.start.x);
+    expect(car.mesh.position.z).toBe(course.start.z);
+    expect(car.collisionBody.velocityX).toBe(0);
+    expect(car.collisionBody.velocityZ).toBe(0);
+    expect(car.collisionBody.angularVelocity).toBe(0);
+    car.dispose(); scene.dispose(); engine.dispose();
+  });
+
   it("counts down, finishes once, retains activity through results, and releases all visuals", () => {
     const engine = new NullEngine(); const scene = new Scene(engine); const manager = new RaceManager(scene, town);
     const player = playerStub(); const initialMeshes = scene.meshes.length;

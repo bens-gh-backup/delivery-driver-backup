@@ -13,11 +13,16 @@ import type { WorldQuery } from "../world/WorldQuery";
 import { STARTER_VEHICLE } from "../vehicles/VehicleCatalog";
 import type { VehicleDefinition, VehicleStats } from "../vehicles/VehicleTypes";
 import { createLowPolyVehicleMesh } from "../vehicles/VehicleMeshFactory";
+import { createBlenderCabMesh } from "../vehicles/BlenderCabMesh";
+import { createBlenderPoliceMeshes } from "../vehicles/BlenderChaseMeshes";
+import { createBlenderAmbulanceMeshes } from "../vehicles/BlenderAmbulanceMesh";
+import { hasEnhancedGraphics, usesBlenderCab } from "../graphics/GraphicsMode";
 
-import type { PursuitImpact } from "../traffic/PursuitImpact";
+import { beginBodyStep, createVehicleBody, endBodyStep, setBodySize } from "../physics/VehicleBody";
 
 export class PlayerCar {
   readonly root: Mesh;
+  readonly collisionBody = createVehicleBody(-1);
   heading = 0;
   resetGeneration = 0;
   private velocityX = 0;
@@ -33,6 +38,7 @@ export class PlayerCar {
   private vehicleMaterials: StandardMaterial[] = [];
   private emergencyLights: Mesh[] = [];
   private emergencyElapsed = 0;
+  private emergencyPhase = -1;
 
   constructor(
     private readonly scene: Scene,
@@ -47,12 +53,13 @@ export class PlayerCar {
     this.reset();
   }
 
-  update(deltaTime: number, input: Input, worldQuery: WorldQuery, canAccelerate = true, damagePercent = 0): void {
+  update(deltaTime: number, input: Input, worldQuery: WorldQuery, canAccelerate = true, damagePercent = 0, deferStaticCollisions = false): void {
     if (input.consumeReset()) {
       this.reset();
       return;
     }
 
+    beginBodyStep(this.collisionBody, this.root.position.x, this.root.position.z, this.heading);
     input.updateDriving(deltaTime);
     const onSidewalk = worldQuery.isOnSidewalk(this.root.position.x, this.root.position.z);
     this.simulateHandling(deltaTime, input, onSidewalk, canAccelerate, damagePercent);
@@ -62,7 +69,8 @@ export class PlayerCar {
     this.root.position.z += this.velocityZ * deltaTime;
     this.root.rotation.y = this.heading;
 
-    this.resolveStaticCollisions(worldQuery);
+    if (!deferStaticCollisions) this.resolveStaticCollisions(worldQuery);
+    this.syncCollisionBody(deltaTime);
   }
 
   reset(): void {
@@ -84,6 +92,7 @@ export class PlayerCar {
     this.yawRate = 0;
     this.collisionYawRate = 0;
     this.collisionSlideRemaining = 0;
+    this.syncCollisionBody(0);
     this.root.rotation.set(0, this.heading, 0);
   }
 
@@ -97,6 +106,7 @@ export class PlayerCar {
     this.yawRate = 0;
     this.collisionYawRate = 0;
     this.collisionSlideRemaining = 0;
+    this.syncCollisionBody(0);
     this.root.rotation.set(0, heading, 0);
   }
 
@@ -141,6 +151,8 @@ export class PlayerCar {
     return this.vehicleDefinition.id;
   }
 
+  get isPoliceCar(): boolean { return this.vehicleDefinition.appearance.role === "police"; }
+
   get isAmbulance(): boolean { return this.vehicleDefinition.appearance.role === "ambulance"; }
 
   get colliderRadius(): number {
@@ -148,6 +160,7 @@ export class PlayerCar {
   }
 
   equipVehicle(vehicle: VehicleDefinition, effectiveStats: VehicleStats, preserveMotion = false): void {
+    this.resetGeneration += 1;
     const vx = this.velocityX, vz = this.velocityZ;
     this.vehicleDefinition = vehicle;
     this.effectiveStats = { ...effectiveStats };
@@ -160,6 +173,7 @@ export class PlayerCar {
     this.yawRate = 0;
     this.collisionYawRate = 0;
     this.collisionSlideRemaining = 0;
+    this.syncCollisionBody(0);
     this.createMesh(vehicle);
   }
 
@@ -167,17 +181,23 @@ export class PlayerCar {
     this.effectiveStats = { ...effectiveStats };
   }
 
-  applyTrafficCollision(normalX: number, normalZ: number, depth: number, applyImpact = true): void {
-    this.root.position.x += normalX * depth * 1.2;
-    this.root.position.z += normalZ * depth * 1.2;
-    if (applyImpact) this.applyCollisionResponse(normalX, normalZ);
+  syncCollisionBody(dt: number): void {
+    setBodySize(this.collisionBody, this.vehicleWidth, this.vehicleLength);
+    this.collisionBody.staticRadius = this.colliderRadius;
+    this.collisionBody.dynamic = true;
+    endBodyStep(this.collisionBody, this.root.position.x, this.root.position.z, this.heading,
+      this.getVelocityX(), this.getVelocityZ(), this.yawRate + this.collisionYawRate, dt);
   }
 
-  applyPursuitImpact(impact: PursuitImpact): void {
-    this.velocityX += impact.velocityX;
-    this.velocityZ += impact.velocityZ;
-    this.collisionYawRate = impact.yawRate;
-    this.collisionSlideRemaining = GAME_CONFIG.police.pursuitSlideSeconds;
+  applyCollisionBody(): void {
+    const body = this.collisionBody;
+    if (!body.changed) return;
+    this.root.position.x = body.x; this.root.position.z = body.z;
+    this.heading = this.root.rotation.y = body.heading;
+    this.velocityX = body.velocityX; this.velocityZ = body.velocityZ;
+    this.collisionYawRate = body.angularVelocity - this.yawRate;
+    if (body.impulse >= GAME_CONFIG.vehicleCollisions.slideImpactThreshold)
+      this.collisionSlideRemaining = GAME_CONFIG.vehicleCollisions.gripRecoverySeconds;
   }
 
   private createMesh(vehicle: VehicleDefinition): void {
@@ -190,39 +210,58 @@ export class PlayerCar {
     const material = new StandardMaterial(`player-vehicle-mat-${vehicle.id}`, this.scene);
     material.diffuseColor = Color3.White();
     material.specularColor = new Color3(0.16, 0.16, 0.16);
-    const mesh = createLowPolyVehicleMesh(this.scene, `player-vehicle-${vehicle.id}`, material, {
-      bodyColor: Color3.FromHexString(appearance.bodyColor),
-      bodyLength: appearance.bodyLength,
-      bodyWidth: appearance.bodyWidth,
-      bodyHeight: appearance.bodyHeight,
-      cabinLength: appearance.cabinLength,
-      cabinWidth: appearance.cabinWidth,
-      cabinHeight: appearance.cabinHeight,
-      ambulance: appearance.role === "ambulance",
-    });
+    const ambulance = appearance.role === "ambulance", police = appearance.role === "police";
+    const lightMaterials = ambulance || police ? [-1, 1].map(side => {
+      const lightMaterial = new StandardMaterial(`ambulance-light-${side}`, this.scene);
+      lightMaterial.diffuseColor.set(1, 1, 1);
+      lightMaterial.specularColor.set(.08, .08, .08);
+      return lightMaterial;
+    }) : [];
+    const model = police ? createBlenderPoliceMeshes(this.scene, material, appearance, lightMaterials)
+      : ambulance && hasEnhancedGraphics(this.scene)
+      ? createBlenderAmbulanceMeshes(this.scene, material, appearance, lightMaterials) : null;
+    const mesh = model?.body ?? (vehicle.id === STARTER_VEHICLE.id && usesBlenderCab(this.scene)
+      ? createBlenderCabMesh(this.scene, `player-vehicle-${vehicle.id}`, material, appearance)
+      : createLowPolyVehicleMesh(this.scene, `player-vehicle-${vehicle.id}`, material, {
+        bodyColor: Color3.FromHexString(appearance.bodyColor),
+        bodyLength: appearance.bodyLength, bodyWidth: appearance.bodyWidth,
+        bodyHeight: appearance.bodyHeight, cabinLength: appearance.cabinLength,
+        cabinWidth: appearance.cabinWidth, cabinHeight: appearance.cabinHeight, ambulance,
+      }));
     mesh.parent = this.root;
     material.freeze();
-    this.vehicleMaterials.push(material);
+    this.vehicleMaterials.push(material, ...lightMaterials);
     this.vehicleMeshes.push(mesh);
-    if (appearance.role === "ambulance") {
-      for (const side of [-1,1]) {
-        const lightMaterial = new StandardMaterial(`ambulance-light-${side}`,this.scene);
-        const color = side < 0 ? new Color3(1,.04,.04) : new Color3(.04,.22,1);
-        lightMaterial.diffuseColor.copyFrom(color); lightMaterial.emissiveColor.copyFrom(color);
-        const light = MeshBuilder.CreateBox(`ambulance-roof-light-${side}`,{width:2.3,height:.32,depth:.75},this.scene);
-        light.parent=this.root;light.position.set(side*1.3,appearance.bodyHeight*.55+appearance.cabinHeight+.2,-.8);
-        light.material=lightMaterial;this.vehicleMeshes.push(light);this.vehicleMaterials.push(lightMaterial);this.emergencyLights.push(light);
-      }
-      this.emergencyElapsed=0; this.updateEmergencyLights(0);
+    if (ambulance || police) {
+      this.emergencyLights = model?.lights ?? [-1, 1].map((side, index) => {
+        const light = MeshBuilder.CreateBox(`ambulance-roof-light-${side}`,
+          { width: 2.3, height: .32, depth: .75 }, this.scene);
+        light.position.set(side * 1.3, appearance.bodyHeight * .55 + appearance.cabinHeight + .2, -.8);
+        light.material = lightMaterials[index];
+        lightMaterials[index].diffuseColor.set(...(index === 0 ? [1, .04, .04] : [.04, .22, 1]) as [number, number, number]);
+        return light;
+      });
+      for (const light of this.emergencyLights) light.parent = this.root;
+      this.vehicleMeshes.push(...this.emergencyLights);
+      this.emergencyElapsed = 0;
+      this.emergencyPhase = -1;
+      this.updateEmergencyLights(0);
     }
   }
 
   private updateEmergencyLights(deltaTime: number): void {
     if (this.emergencyLights.length !== 2) return;
     this.emergencyElapsed += deltaTime;
-    const active = Math.floor(this.emergencyElapsed / GAME_CONFIG.ambulanceDriver.lightFlashSeconds) % 2;
-    this.emergencyLights[0].setEnabled(active === 0);
-    this.emergencyLights[1].setEnabled(active === 1);
+    const active = Math.floor(this.emergencyElapsed / (this.isPoliceCar ? GAME_CONFIG.policeChase.lightFlashSeconds : GAME_CONFIG.ambulanceDriver.lightFlashSeconds)) % 2;
+    if (active === this.emergencyPhase) return;
+    this.emergencyPhase = active;
+    // Keep the unlit lens physically present; only change emission twice per cycle.
+    for (let i = 0; i < 2; i++) {
+      const material = this.emergencyLights[i].material as StandardMaterial;
+      if (i !== active) material.emissiveColor.set(0, 0, 0);
+      else if (i === 0) material.emissiveColor.set(1, .04, .04);
+      else material.emissiveColor.set(.04, .22, 1);
+    }
   }
 
   private simulateHandling(deltaTime: number, input: Input, onSidewalk: boolean, canAccelerate: boolean, damagePercent: number): void {
@@ -231,8 +270,9 @@ export class PlayerCar {
     const rightX = Math.cos(this.heading);
     const rightZ = -Math.sin(this.heading);
     let forwardSpeed = this.velocityX * forwardX + this.velocityZ * forwardZ;
+    const previousForwardSpeed = forwardSpeed;
     let lateralSpeed = this.velocityX * rightX + this.velocityZ * rightZ;
-    const damage = clamp(damagePercent, 0, 1);
+    const damage = this.isPoliceCar ? 0 : clamp(damagePercent, 0, 1);
     const damageEffects = this.config.damageEffects;
     const accelerationRatio = this.effectiveStats.acceleration / this.config.acceleration;
     const turningRatio = this.effectiveStats.turning;
@@ -253,13 +293,13 @@ export class PlayerCar {
     if (brake > 0.01) {
       if (forwardSpeed > 0.5) {
         forwardSpeed = this.moveTowards(forwardSpeed, 0, this.effectiveStats.braking * brakingDamageMultiplier * brake * deltaTime);
-      } else {
+      } else if (forwardSpeed > -maxReverseSpeed) {
         forwardSpeed -= this.config.reverseAcceleration * handlingMultiplier * reverseDamageMultiplier * brake * deltaTime;
       }
     } else if (throttle > 0.01) {
       if (forwardSpeed < -0.5) {
         forwardSpeed = this.moveTowards(forwardSpeed, 0, this.effectiveStats.braking * brakingDamageMultiplier * throttle * deltaTime);
-      } else {
+      } else if (forwardSpeed < maxForwardSpeed) {
         const speedRatio = clamp(Math.max(0, forwardSpeed) / maxForwardSpeed, 0, 1);
         const acceleration = lerp(
           this.effectiveStats.acceleration,
@@ -277,7 +317,10 @@ export class PlayerCar {
     if (onSidewalk && Math.abs(forwardSpeed) > maxForwardSpeed) {
       forwardSpeed = this.moveTowards(forwardSpeed, 0, this.config.sidewalkExtraDrag * deltaTime);
     }
-    forwardSpeed = clamp(forwardSpeed, -maxReverseSpeed, maxForwardSpeed);
+    // An impact may carry a car faster than its engine (or reverse gear) can drive it.
+    // Preserve that momentum while drag/brakes dissipate it; the engine cannot add more.
+    forwardSpeed = clamp(forwardSpeed, Math.min(-maxReverseSpeed, previousForwardSpeed),
+      Math.max(maxForwardSpeed, previousForwardSpeed));
 
     const baseSpeedRatio = clamp(Math.abs(forwardSpeed) / this.effectiveStats.topSpeed, 0, 1);
     const steeringActivation = clamp(
@@ -337,11 +380,13 @@ export class PlayerCar {
     this.yawRate = clamp(this.yawRate, -maxYawRate, maxYawRate);
 
     this.collisionSlideRemaining = Math.max(0, this.collisionSlideRemaining - deltaTime);
-    const collisionSlip = this.collisionSlideRemaining / GAME_CONFIG.police.pursuitSlideSeconds;
-    const lateralGrip = lerp(this.config.lateralGrip, this.config.slidingGrip, Math.max(slip, collisionSlip)) * surfaceGrip;
+    const collisionSlip = this.collisionSlideRemaining / Math.max(1e-6, GAME_CONFIG.vehicleCollisions.gripRecoverySeconds);
+    const handlingGrip = lerp(this.config.lateralGrip, this.config.slidingGrip, slip);
+    const impactGrip = lerp(this.config.lateralGrip, GAME_CONFIG.vehicleCollisions.impactGrip, collisionSlip);
+    const lateralGrip = Math.min(handlingGrip, impactGrip) * surfaceGrip;
     const collisionCounterSteer = input.steering * this.collisionYawRate < -0.02;
-    this.collisionYawRate *= Math.exp(-(GAME_CONFIG.police.pursuitSpinDamping
-      + (collisionCounterSteer ? 3 : 0)) * deltaTime);
+    this.collisionYawRate *= Math.exp(-(GAME_CONFIG.vehicleCollisions.angularDamping
+      + (collisionCounterSteer ? GAME_CONFIG.vehicleCollisions.counterSteerDamping : 0)) * deltaTime);
     lateralSpeed *= Math.exp(-lateralGrip * deltaTime);
 
     this.velocityX = forwardX * forwardSpeed + rightX * lateralSpeed;
@@ -414,9 +459,7 @@ export class PlayerCar {
       this.velocityX -= normalX * velocityIntoSurface * (1 + restitution);
       this.velocityZ -= normalZ * velocityIntoSurface * (1 + restitution);
     }
-    this.velocityX *= this.config.collisionSpeedLoss;
-    this.velocityZ *= this.config.collisionSpeedLoss;
-    this.yawRate *= 0.45;
+    // Preserve motion along a wall; contact friction belongs to the shared vehicle solver.
   }
 
   private moveTowards(current: number, target: number, maxDelta: number): number {
