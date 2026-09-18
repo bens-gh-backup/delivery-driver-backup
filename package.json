@@ -4,13 +4,31 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "assets:apartment": "node scripts/blender/prepare-apartment.mjs",
+    "assets:apartment:check": "node scripts/blender/prepare-apartment.mjs --check",
+    "assets:cab": "node scripts/blender/prepare-cab.mjs",
+    "assets:cab:check": "node scripts/blender/prepare-cab.mjs --check",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
     "backup:github": "python3 scripts/backup-github.py",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
     "deploy:cloudflare": "npm run build && wrangler deploy",
-    "deploy:cloudflare:preview": "npm run build && wrangler deploy --name ai-taxi-training-preview"
+    "deploy:cloudflare:preview": "npm run build && wrangler deploy --name ai-taxi-training-preview",
+    "assets:services": "node scripts/blender/prepare-services.mjs",
+    "assets:services:check": "node scripts/blender/prepare-services.mjs --check",
+    "assets:passenger": "node scripts/blender/prepare-passenger.mjs",
+    "assets:passenger:check": "node scripts/blender/prepare-passenger.mjs --check",
+    "assets:patient": "node scripts/blender/prepare-passenger.mjs --patient",
+    "assets:patient:check": "node scripts/blender/prepare-passenger.mjs --patient --check",
+    "assets:ambulance": "node scripts/blender/prepare-ambulance.mjs",
+    "assets:ambulance:check": "node scripts/blender/prepare-ambulance.mjs --check",
+    "assets:police": "node scripts/blender/prepare-ambulance.mjs --police",
+    "assets:police:check": "node scripts/blender/prepare-ambulance.mjs --police --check",
+    "assets:suspect": "node scripts/blender/prepare-ambulance.mjs --suspect",
+    "assets:suspect:check": "node scripts/blender/prepare-ambulance.mjs --suspect --check",
+    "assets:neighborhood": "node scripts/blender/prepare-neighborhood.mjs",
+    "assets:neighborhood:check": "node scripts/blender/prepare-neighborhood.mjs --check"
   },
   "dependencies": {
     "@babylonjs/core": "^8.26.1"
