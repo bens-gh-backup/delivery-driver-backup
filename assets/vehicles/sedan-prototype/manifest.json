@@ -1,0 +1,67 @@
+{
+  "palette": {
+    "paint": "#668a83",
+    "paint_light": "#72938b",
+    "paint_dark": "#456760",
+    "stone": "#dfd5bd",
+    "base": "#838079",
+    "glass": "#28444d",
+    "glass_high": "#45626a",
+    "metal": "#acb7b4",
+    "dark": "#303e43",
+    "rubber": "#232b30",
+    "roof": "#4b5d62",
+    "brick": "#a57662",
+    "wood": "#8e7d64",
+    "lamp": "#fff0b8",
+    "tail": "#cc0906"
+  },
+  "models": {
+    "sedan-3k": {
+      "triangles": 2266,
+      "vertices": 4460,
+      "budget": 3000,
+      "stories": 0,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    },
+    "sedan-6k": {
+      "triangles": 4978,
+      "vertices": 9776,
+      "budget": 6000,
+      "stories": 0,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "roles": [
+    "wall",
+    "stone",
+    "base",
+    "glass",
+    "glass_high",
+    "metal",
+    "awning",
+    "awning_light",
+    "roof"
+  ],
+  "themes": [
+    {
+      "name": "Terracotta",
+      "wall": "#b9806b",
+      "stone": "#e3d3b9",
+      "base": "#786b65",
+      "glass": "#233d46",
+      "glass_high": "#415e66",
+      "metal": "#35474a",
+      "awning": "#365e57",
+      "awning_light": "#ddceb2",
+      "roof": "#536062"
+    },
+    {
+      "name": "Sage",
+      "wall": "#96afa0",
+      "stone": "#e0d7bd",
+      "base": "#5f7470",
+      "glass": "#233d46",
+      "glass_high": "#415e66",
+      "metal": "#35474a",
+      "awning": "#4b6275",
+      "awning_light": "#ddceb2",
+      "roof": "#536062"
+    },
+    {
+      "name": "Limestone",
+      "wall": "#c9b79a",
+      "stone": "#e6dbc5",
+      "base": "#847767",
+      "glass": "#233d46",
+      "glass_high": "#415e66",
+      "metal": "#35474a",
+      "awning": "#835252",
+      "awning_light": "#ddceb2",
+      "roof": "#536062"
+    },
+    {
+      "name": "Slate",
+      "wall": "#8298a6",
+      "stone": "#e0d7c2",
+      "base": "#62717b",
+      "glass": "#233d46",
+      "glass_high": "#415e66",
+      "metal": "#35474a",
+      "awning": "#8d764f",
+      "awning_light": "#ddceb2",
+      "roof": "#536062"
+    }
+  ],
+  "bayWidth": 10,
+  "groundHeight": 4.8,
+  "floorHeight": 6.5,
+  "corniceHeight": 1.2,
+  "bayProjection": 0.8,
+  "partTriangles": {
+    "upper": 30,
+    "shop": 50,
+    "entry": 30,
+    "cornice": 12
+  }
+}

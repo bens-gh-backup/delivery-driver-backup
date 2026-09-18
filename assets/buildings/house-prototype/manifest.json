@@ -1,0 +1,113 @@
+{
+  "palette": {
+    "paint": "#668a83",
+    "paint_light": "#72938b",
+    "paint_dark": "#456760",
+    "stone": "#dfd5bd",
+    "base": "#838079",
+    "glass": "#28444d",
+    "glass_high": "#45626a",
+    "metal": "#acb7b4",
+    "dark": "#303e43",
+    "rubber": "#232b30",
+    "roof": "#4b5d62",
+    "brick": "#a57662",
+    "wood": "#8e7d64",
+    "lamp": "#fff0b8",
+    "tail": "#cc0906"
+  },
+  "models": {
+    "house-3k-1floor": {
+      "triangles": 1053,
+      "vertices": 2109,
+      "budget": 3000,
+      "stories": 1,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    },
+    "house-3k-2floor": {
+      "triangles": 1449,
+      "vertices": 2901,
+      "budget": 3000,
+      "stories": 2,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    },
+    "house-6k-1floor": {
+      "triangles": 3137,
+      "vertices": 6253,
+      "budget": 6000,
+      "stories": 1,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    },
+    "house-6k-2floor": {
+      "triangles": 4233,
+      "vertices": 8445,
+      "budget": 6000,
+      "stories": 2,
+      "roles": [
+        "paint",
+        "paint_light",
+        "paint_dark",
+        "stone",
+        "base",
+        "glass",
+        "glass_high",
+        "metal",
+        "dark",
+        "rubber",
+        "roof",
+        "brick",
+        "wood",
+        "lamp",
+        "tail"
+      ]
+    }
+  }
+}

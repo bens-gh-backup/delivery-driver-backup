@@ -1,0 +1,16 @@
+[
+  {
+    "model": "procedural",
+    "worldTriangles": 215466,
+    "worldMeshes": 121,
+    "materials": 37,
+    "textures": 4
+  },
+  {
+    "model": "blender",
+    "worldTriangles": 228390,
+    "worldMeshes": 112,
+    "materials": 37,
+    "textures": 4
+  }
+]

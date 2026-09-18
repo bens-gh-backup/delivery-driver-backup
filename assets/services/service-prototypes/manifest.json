@@ -1,0 +1,34 @@
+{
+  "front": "Blender -Y / game -Z",
+  "ground": {
+    "gas": 0,
+    "repair": 0.26
+  },
+  "gasBodyWidth": 32,
+  "gasBodyDepth": 14,
+  "gasRoofDepth": 16,
+  "repairWidth": 28,
+  "repairDepth": 16,
+  "models": {
+    "gas_kiosk": {
+      "triangles": 166,
+      "vertices": 332
+    },
+    "gas_roof": {
+      "triangles": 76,
+      "vertices": 144
+    },
+    "gas_pump": {
+      "triangles": 440,
+      "vertices": 848
+    },
+    "repair_shell": {
+      "triangles": 310,
+      "vertices": 620
+    },
+    "repair_roof": {
+      "triangles": 98,
+      "vertices": 192
+    }
+  }
+}

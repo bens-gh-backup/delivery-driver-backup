@@ -1,0 +1,484 @@
+[
+  {
+    "mode": "procedural",
+    "lots": [
+      {
+        "x": -320.7902266535041,
+        "z": -60.5,
+        "width": 38.16639336505705,
+        "depth": 44,
+        "height": 38.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-0",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.2531533279347125,
+            null,
+            5.080726608617866
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            32
+          ]
+        },
+        "color": "Terracotta"
+      },
+      {
+        "x": -234.12653510978598,
+        "z": -60.5,
+        "width": 38.1257768767131,
+        "depth": 44,
+        "height": 51.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-2",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.287819570381618,
+            null,
+            5.127293342858854
+          ],
+          "neighborHeights": [
+            0,
+            32,
+            0,
+            58
+          ]
+        },
+        "color": "Sage"
+      },
+      {
+        "x": -190.80113770443737,
+        "z": -60.5,
+        "width": 38.270431248266355,
+        "depth": 44,
+        "height": 58,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-3",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.127293342858854,
+            null,
+            4.998510827275112
+          ],
+          "neighborHeights": [
+            0,
+            51.5,
+            0,
+            45
+          ]
+        },
+        "color": "Limestone"
+      },
+      {
+        "x": -147.53141832338446,
+        "z": -60.5,
+        "width": 38.2719858592893,
+        "depth": 44,
+        "height": 45,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-4",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            4.998510827275112,
+            null,
+            5.124184120812962
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            51.5
+          ]
+        },
+        "color": "Slate"
+      }
+    ],
+    "upgradedBuildings": 0,
+    "worldTriangles": 220174,
+    "worldMeshes": 112,
+    "materials": 37,
+    "textures": 4,
+    "worldTriangleBudget": 380000
+  },
+  {
+    "mode": "pilot",
+    "lots": [
+      {
+        "x": -320.7902266535041,
+        "z": -60.5,
+        "width": 38.16639336505705,
+        "depth": 44,
+        "height": 38.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-0",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.2531533279347125,
+            null,
+            5.080726608617866
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            32
+          ]
+        },
+        "color": "Terracotta"
+      },
+      {
+        "x": -234.12653510978598,
+        "z": -60.5,
+        "width": 38.1257768767131,
+        "depth": 44,
+        "height": 51.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-2",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.287819570381618,
+            null,
+            5.127293342858854
+          ],
+          "neighborHeights": [
+            0,
+            32,
+            0,
+            58
+          ]
+        },
+        "color": "Sage"
+      },
+      {
+        "x": -190.80113770443737,
+        "z": -60.5,
+        "width": 38.270431248266355,
+        "depth": 44,
+        "height": 58,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-3",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.127293342858854,
+            null,
+            4.998510827275112
+          ],
+          "neighborHeights": [
+            0,
+            51.5,
+            0,
+            45
+          ]
+        },
+        "color": "Limestone"
+      },
+      {
+        "x": -147.53141832338446,
+        "z": -60.5,
+        "width": 38.2719858592893,
+        "depth": 44,
+        "height": 45,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-4",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            4.998510827275112,
+            null,
+            5.124184120812962
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            51.5
+          ]
+        },
+        "color": "Slate"
+      }
+    ],
+    "upgradedBuildings": 4,
+    "worldTriangles": 222746,
+    "worldMeshes": 112,
+    "materials": 37,
+    "textures": 4,
+    "worldTriangleBudget": 380000
+  },
+  {
+    "mode": "all",
+    "lots": [
+      {
+        "x": -320.7902266535041,
+        "z": -60.5,
+        "width": 38.16639336505705,
+        "depth": 44,
+        "height": 38.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-0",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.2531533279347125,
+            null,
+            5.080726608617866
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            32
+          ]
+        },
+        "color": "Terracotta"
+      },
+      {
+        "x": -234.12653510978598,
+        "z": -60.5,
+        "width": 38.1257768767131,
+        "depth": 44,
+        "height": 51.5,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-2",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.287819570381618,
+            null,
+            5.127293342858854
+          ],
+          "neighborHeights": [
+            0,
+            32,
+            0,
+            58
+          ]
+        },
+        "color": "Sage"
+      },
+      {
+        "x": -190.80113770443737,
+        "z": -60.5,
+        "width": 38.270431248266355,
+        "depth": 44,
+        "height": 58,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-3",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            5.127293342858854,
+            null,
+            4.998510827275112
+          ],
+          "neighborHeights": [
+            0,
+            51.5,
+            0,
+            45
+          ]
+        },
+        "color": "Limestone"
+      },
+      {
+        "x": -147.53141832338446,
+        "z": -60.5,
+        "width": 38.2719858592893,
+        "depth": 44,
+        "height": 45,
+        "district": "downtown",
+        "landmark": false,
+        "facing": 2,
+        "frontage": {
+          "id": "building-2-2-2-0-4",
+          "blockId": "block-2-2",
+          "colorSeed": 2278281640,
+          "streetSides": [
+            0
+          ],
+          "coveredHeights": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "sideClearances": [
+            null,
+            4.998510827275112,
+            null,
+            5.124184120812962
+          ],
+          "neighborHeights": [
+            0,
+            58,
+            0,
+            51.5
+          ]
+        },
+        "color": "Slate"
+      }
+    ],
+    "upgradedBuildings": 219,
+    "worldTriangles": 366136,
+    "worldMeshes": 112,
+    "materials": 37,
+    "textures": 4,
+    "worldTriangleBudget": 380000,
+    "gapDrive": {
+      "width": 5.0807266086178515,
+      "taxiWidth": 5.8,
+      "stoppedOutside": true
+    }
+  }
+]
