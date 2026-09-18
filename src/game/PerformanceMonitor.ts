@@ -1,14 +1,21 @@
 import { FrameTimingWindow } from "./FrameTimingWindow";
+import { FrameHeadroom, formatHeadroom } from "./FrameHeadroom";
 import { GAME_CONFIG } from "./config";
 import type { Engine } from "@babylonjs/core/Engines/engine";
+import "@babylonjs/core/Engines/Extensions/engine.query";
+import { EngineInstrumentation } from "@babylonjs/core/Instrumentation/engineInstrumentation";
 import { SceneInstrumentation } from "@babylonjs/core/Instrumentation/sceneInstrumentation";
 import type { Scene } from "@babylonjs/core/scene";
 import type { DrivingBehaviorManager } from "../player/DrivingBehaviorManager";
+import { geometryBufferBytes, renderedGeometry } from "../graphics/GeometryStats";
 
 export class PerformanceMonitor {
   private readonly enabled = new URLSearchParams(window.location.search).has("debug");
   private readonly element: HTMLDivElement | null;
   private instrumentation: SceneInstrumentation | null = null;
+  private gpuInstrumentation: EngineInstrumentation | null = null;
+  private headroom: FrameHeadroom | null = null;
+  private lastGpuSampleCount = 0;
   private scene: Scene;
   private readonly frameTimings = new FrameTimingWindow(GAME_CONFIG.graphics.performanceSampleCount);
   private startupMilliseconds = 0;
@@ -29,6 +36,7 @@ export class PerformanceMonitor {
     this.frameTimings.clear();
     this.lastStall=null;
     this.skipNextInterval=true;
+    this.resetHeadroom();
   };
 
   constructor(private readonly engine: Engine, scene: Scene, uiRoot: HTMLElement) {
@@ -41,6 +49,12 @@ export class PerformanceMonitor {
     this.element = document.createElement("div");
     this.element.className = "performance-monitor";
     uiRoot.append(this.element);
+    this.headroom = new FrameHeadroom();
+    if (engine.getCaps().timerQuery) {
+      this.gpuInstrumentation = new EngineInstrumentation(engine);
+      // Asynchronous timer queries: never block waiting for the GPU to finish.
+      this.gpuInstrumentation.captureGPUFrameTime = true;
+    }
     this.attachScene(scene);
     document.addEventListener("visibilitychange",this.onVisibilityChange);
   }
@@ -51,6 +65,7 @@ export class PerformanceMonitor {
     this.frameTimings.clear();
     this.lastStall=null;
     this.skipNextInterval=true;
+    this.resetHeadroom();
     if (!this.enabled) {
       return;
     }
@@ -85,12 +100,33 @@ export class PerformanceMonitor {
     this.uiPeak=Math.max(this.uiPeak,this.uiMilliseconds);
   }
   beginRender(): void { if(this.enabled) this.renderStartedAt=performance.now(); }
-  endRender(): void { if(this.enabled) this.renderMilliseconds=performance.now()-this.renderStartedAt; }
+  endRender(): void {
+    if (!this.enabled) return;
+    const now = performance.now();
+    this.renderMilliseconds = now - this.renderStartedAt;
+    if (!document.hidden) this.headroom?.addCpu(now - this.updateStartedAt, now);
+  }
+
+  private resetHeadroom(): void {
+    this.headroom?.clear();
+    this.lastGpuSampleCount = this.gpuInstrumentation?.gpuFrameTimeCounter.count ?? 0;
+  }
+
+  private collectGpuTiming(now: number): void {
+    const counter = this.gpuInstrumentation?.gpuFrameTimeCounter;
+    if (!counter || counter.count === this.lastGpuSampleCount) return;
+    this.lastGpuSampleCount = counter.count;
+    // A query may finish several frames later; count each completed sample just once.
+    if (!document.hidden) this.headroom?.addGpu(counter.current / 1_000_000, now);
+  }
 
   /** Debug-only, bounded report. UI time is a subset of update time, not additional work. */
   getDiagnostics() {
     return {enabled:this.enabled,frame:this.frameTimings.summarize(),lastStall:this.lastStall,
-      updatePeakMs:this.updatePeak,uiPeakMs:this.uiPeak,graphicsMode:this.scene.metadata?.graphicsMode};
+      updatePeakMs:this.updatePeak,uiPeakMs:this.uiPeak,graphicsMode:this.scene.metadata?.graphicsMode,
+      headroom:this.headroom?.summarize(performance.now()) ?? null,
+      geometry: { ...renderedGeometry(this.scene), bufferBytes: geometryBufferBytes(this.scene) },
+      gpuTimingSupported:this.gpuInstrumentation !== null};
   }
 
   afterRender(activeAiCount: number, collisionCandidates: number, drivingBehavior: DrivingBehaviorManager | null): void {
@@ -108,21 +144,16 @@ export class PerformanceMonitor {
     this.previousCpu.ui=this.uiMilliseconds;
     this.previousCpu.render=this.renderMilliseconds;
     const now = performance.now();
+    this.collectGpuTiming(now);
     if (now - this.lastDisplayUpdate < 500) {
       return;
     }
     this.lastDisplayUpdate = now;
-    const activeMeshes = this.scene.getActiveMeshes();
-    let visibleVertices = 0;
-    let visibleTriangles = 0;
-    for (let index = 0; index < activeMeshes.length; index++) {
-      const mesh = activeMeshes.data[index];
-      visibleVertices += mesh.getTotalVertices();
-      visibleTriangles += Math.floor(mesh.getTotalIndices() / 3);
-    }
+    const geometry = renderedGeometry(this.scene);
     const timing = this.frameTimings.summarize();
     const lines = [
       `${this.engine.getFps().toFixed(0)} FPS · ${this.scene.metadata?.graphicsMode ?? GAME_CONFIG.graphics.defaultMode}`,
+      ...formatHeadroom(this.headroom!.summarize(now), this.gpuInstrumentation !== null),
       `${timing.median.toFixed(2)} ms median / ${timing.p95.toFixed(2)} ms p95 (${timing.samples} frames)`,
       `${timing.p99.toFixed(2)} ms p99 / ${timing.max.toFixed(2)} ms worst`,
       `${timing.over33ms} frames >33ms / ${timing.over50ms} >50ms`,
@@ -132,7 +163,9 @@ export class PerformanceMonitor {
       `${this.instrumentation.renderTimeCounter.lastSecAverage.toFixed(2)} ms CPU render (not GPU)`,
       `${this.instrumentation.drawCallsCounter.current} draw calls`,
       `${this.scene.getActiveMeshes().length}/${this.scene.meshes.length} meshes`,
-      `${formatCount(visibleTriangles)} triangles / ${formatCount(visibleVertices)} vertices`,
+      `${formatCount(geometry.triangles)} submitted triangles`,
+      `${geometry.detailedHouses} detailed / ${geometry.simpleHouses} distant houses`,
+      `${(geometryBufferBytes(this.scene) / 1048576).toFixed(1)} MiB geometry buffers (shared)`,
       `${activeAiCount} active AI`,
       `${collisionCandidates} collision candidates`,
     ];
@@ -153,6 +186,9 @@ export class PerformanceMonitor {
   }
 
   dispose(): void {
+    // EngineInstrumentation.dispose() alone does not disable the engine's GPU observers.
+    if (this.gpuInstrumentation) this.gpuInstrumentation.captureGPUFrameTime = false;
+    this.gpuInstrumentation?.dispose();
     this.instrumentation?.dispose();
     this.element?.remove();
     document.removeEventListener("visibilitychange",this.onVisibilityChange);

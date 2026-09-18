@@ -1,3 +1,8 @@
+import { LoadingOverlay } from "../ui/LoadingOverlay";
+import { warmHouseShaders } from "../world/BlenderHouse";
+import { yieldToBrowser } from "../world/IncrementalBuild";
+import { RaceEncounterManager } from "../racing/RaceEncounterManager";
+import { PoliceChaseManager } from "../chase/PoliceChaseManager";
 import { isInServiceArea } from "../world/ServiceAreas";
 import { createTrainingRegions, TrainingIncomeClock } from "../training/Training";
 import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
@@ -23,6 +28,7 @@ import { GameUI, type UiRaceResult } from "../ui/GameUI";
 import { RaceManager } from "../racing/RaceManager";
 import { RideOfferBoard } from "../ride/RideOfferBoard";
 import { RideManager } from "../ride/RideManager";
+import { PassengerManager } from "../passengers/PassengerManager";
 import { FuelManager } from "../player/FuelManager";
 import { DamageManager } from "../player/DamageManager";
 import { PerformanceMonitor } from "./PerformanceMonitor";
@@ -32,17 +38,25 @@ import { ActivityManager } from "../activity/ActivityManager";
 import { DrivingBehaviorManager } from "../player/DrivingBehaviorManager";
 import { lerp, normalizeAngle } from "../utils/math";
 import { applyPermanentUpgrades, VEHICLE_STAT_KEYS } from "../progression/UpgradeSystem";
-import { AMBULANCE_VEHICLE, STARTER_VEHICLE, getVehicleDefinition } from "../vehicles/VehicleCatalog";
+import { POLICE_VEHICLE, AMBULANCE_VEHICLE, STARTER_VEHICLE, getVehicleDefinition } from "../vehicles/VehicleCatalog";
 import type { VehicleStatKey } from "../vehicles/VehicleTypes";
 import { getMissionLicense, type MissionLicenseId } from "../missions/MissionLicenseCatalog";
 import { PoliceManager } from "../police/PoliceManager";
 import type { PolicePursuitTarget } from "../police/PoliceManager";
 import { policeInputForAmbulance } from "../police/EmergencyPrivileges";
+import type { PackageDeliveryOffer } from "../delivery/PackageDeliveryManager";
 import { AmbulanceDriverManager } from "../delivery/AmbulanceDriverManager";
 
 export class Game {
+  private initialization: Promise<boolean> | null = null;
+  private initialized = false;
+  private loopStarted = false;
+  private readonly loadingOverlay: LoadingOverlay;
+  get isReady(): boolean { return this.initialized; }
   private readonly incomeClock = new TrainingIncomeClock();
   private racing: RaceManager | null = null;
+  private raceEncounters: RaceEncounterManager | null = null;
+  private raceResultSeconds = 0;
   private raceResult: UiRaceResult | null = null;
   private raceReturnPose: { x: number; z: number; heading: number } | null = null;
   private raceStartPose: { x: number; z: number; heading: number } | null = null;
@@ -54,10 +68,13 @@ export class Game {
   private input: Input | null = null;
   private rideOffers: RideOfferBoard | null = null;
   private ride: RideManager | null = null;
+  private passengers: PassengerManager | null = null;
   private fuel: FuelManager | null = null;
   private damage: DamageManager | null = null;
   private traffic: TrafficManager | null = null;
   private police: PoliceManager | null = null;
+  private policeChase: PoliceChaseManager | null = null;
+  private policeReturnState: { vehicleId: string; damage: number; fuel: number } | null = null;
   private ambulanceDriver: AmbulanceDriverManager | null = null;
   private profile: PlayerProfile | null = null;
   private activity: ActivityManager | null = null;
@@ -80,7 +97,6 @@ export class Game {
     private readonly canvas: HTMLCanvasElement,
     uiRoot: HTMLDivElement,
   ) {
-    const startupStarted = performance.now();
     this.scene = this.createScene();
     this.ui = new GameUI(uiRoot, {
       start: () => this.startShift(),
@@ -104,26 +120,68 @@ export class Game {
       setManualWaypoint: position => this.setManualWaypoint(position),
       purchaseRacingLicense: () => this.purchaseRacingLicense(),
       startRace: (regionId) => this.startRace(regionId),
-      retryRace: () => this.retryRace(),
-      continueRace: () => this.endRace(false),
       abortRace: () => this.endRace(true),
       openVehicleShop: () => this.openVehicleShop(),
       canUseVehicleShop: () => this.canUseVehicleShop(),
-      debugUnlockRacing: () => this.profile?.debugUnlockRacing(),
-      debugResetRaceFinish: (regionId: string) => this.profile?.debugResetRaceFinish(regionId),
+      debugUnlockRacing: () => { if (GAME_CONFIG.gameplay.racesEnabled) this.profile?.debugUnlockRacing(); },
+      debugResetRaceFinish: (regionId: string) => { if (GAME_CONFIG.gameplay.racesEnabled) this.profile?.debugResetRaceFinish(regionId); },
     });
     this.performanceMonitor = new PerformanceMonitor(engine, this.scene, uiRoot);
-    this.buildSimulation();
     this.ui.showStart();
+    this.loadingOverlay = new LoadingOverlay(uiRoot);
     document.addEventListener("visibilitychange", () => {
       this.incomeClock.reset();
+      this.passengers?.resetPickup();
+      this.policeChase?.resetEngagement();
       if (document.hidden) this.profile?.saveNow();
     });
-    this.performanceMonitor.setStartupMilliseconds(performance.now() - startupStarted);
+  }
+
+  initialize(resumePlaying = false): Promise<boolean> {
+    if (this.initialization) return this.initialization;
+    if (this.initialized) return Promise.resolve(true);
+    this.initialization = this.loadSimulation(resumePlaying).finally(() => { this.initialization = null; });
+    return this.initialization;
+  }
+
+  private async loadSimulation(resumePlaying: boolean): Promise<boolean> {
+    const started = performance.now();
+    this.loadingOverlay.show();
+    this.incomeClock.reset();
+    try {
+      // Let the overlay paint before doing any city work.
+      await new Promise<void>(resolve => requestAnimationFrame(() => { setTimeout(resolve, 0); }));
+      await this.buildSimulation();
+      this.loadingOverlay.update(.96);
+      await yieldToBrowser();
+      await warmHouseShaders(this.scene);
+      await this.scene.whenReadyAsync();
+      this.scene.render();
+      this.performanceMonitor.setStartupMilliseconds(performance.now() - started);
+      this.incomeClock.reset();
+      this.physicsAccumulator = 0;
+      this.initialized = true;
+      this.state = resumePlaying ? GameState.Playing : GameState.Start;
+      if (resumePlaying) { this.ui.showPlaying(); this.canvas.focus(); }
+      else this.ui.showStart();
+      this.loadingOverlay.hide();
+      return true;
+    } catch (error) {
+      console.error("City initialization failed", error);
+      this.disposeSimulation();
+      this.scene.dispose();
+      this.scene = this.createScene();
+      this.performanceMonitor.attachScene(this.scene);
+      this.loadingOverlay.fail(() => { void this.initialize(resumePlaying); });
+      return false;
+    }
   }
 
   startRenderLoop(): void {
+    if (this.loopStarted) return;
+    this.loopStarted = true;
     this.engine.runRenderLoop(() => {
+      if (!this.initialized) return;
       const deltaTime = Math.min(0.05, this.engine.getDeltaTime() / 1000);
       this.performanceMonitor.beginUpdate();
       const wasPlaying = this.state === GameState.Playing;
@@ -143,21 +201,22 @@ export class Game {
   }
 
   private startShift(): void {
+    if (!this.initialized) return;
     this.state = GameState.Playing;
     this.physicsAccumulator = 0;
     this.ui.showPlaying();
     this.canvas.focus();
   }
 
-  private restart(): void {
+  private restart(): Promise<boolean> {
+    if (this.initialization) return this.initialization;
+    this.initialized = false;
+    this.state = GameState.Start;
     this.disposeSimulation();
     this.scene.dispose();
     this.scene = this.createScene();
     this.performanceMonitor.attachScene(this.scene);
-    this.state = GameState.Playing;
-    this.buildSimulation();
-    this.ui.showPlaying();
-    this.canvas.focus();
+    return this.initialize(true);
   }
 
   private update(deltaTime: number): void {
@@ -168,6 +227,7 @@ export class Game {
       return;
     }
 
+    const enterRacePressed = this.input.consumeRaceEnter();
     if (this.input.consumeEscape()) {
       if (this.ui.isVehicleShopOpen) {
         this.ui.closeShop();
@@ -188,10 +248,24 @@ export class Game {
       }
     }
 
-    if (this.state !== GameState.Playing) {
+    if (this.state !== GameState.Playing || document.hidden) {
+      this.passengers?.resetPickup();
+      this.policeChase?.resetEngagement();
+      this.physicsAccumulator = 0;
       return;
     }
 
+    if (!this.racing?.isActive) {
+      this.raceEncounters?.update(deltaTime);
+      this.updateRaceEncounterCue();
+      if (enterRacePressed && this.canApproachRace()) {
+        const gathering = this.raceEncounters?.getNearby();
+        if (gathering && !this.profile.ownsRacingLicense) {
+          this.ui.openLicenses();
+          this.input.resetDrivingState();
+        } else if (gathering && this.startRace(gathering.course.regionId)) return;
+      }
+    }
     if (this.input.consumePhoneToggle() && !this.racing?.isActive && !this.ui.isVehicleShopOpen) {
       this.ui.togglePhone();
     }
@@ -200,10 +274,13 @@ export class Game {
       this.ui.toggleMap();
     }
     if (this.racing?.isActive) {
+      this.policeChase?.resetEngagement();
       this.updateRace(deltaTime);
       return;
     }
     if (this.ui.isVehicleShopOpen) {
+      this.passengers?.resetPickup();
+      this.policeChase?.resetEngagement();
       this.physicsAccumulator = 0;
       this.input.resetDrivingState();
       this.profile.updateAutosave(deltaTime);
@@ -212,6 +289,7 @@ export class Game {
     }
 
     let citationIssued = false;
+    let simulatedSeconds = 0;
     if (this.worldQuery) {
       const fixedStep = GAME_CONFIG.simulation.fixedStepSeconds;
       this.restorePlayerPhysicsPose();
@@ -223,14 +301,17 @@ export class Game {
       while (this.physicsAccumulator >= fixedStep) {
         this.previousPlayerPosition.copyFrom(this.currentPlayerPosition);
         this.previousPlayerHeading = this.currentPlayerHeading;
+        simulatedSeconds += fixedStep;
+        const chaseStep = this.policeChase?.isActive ?? false;
         const resetGeneration = this.player.resetGeneration;
-        this.player.update(fixedStep, this.input, this.worldQuery, this.fuel.hasFuel, this.damage.damagePercent);
+        this.player.update(fixedStep, this.input, this.worldQuery, this.fuel.hasFuel || chaseStep, this.damage.damagePercent, true);
         if (this.player.resetGeneration !== resetGeneration) {
+          if (chaseStep) this.policeChase!.finish("reset");
           this.passengerDrivingEvents?.reset(this.player.root.position);
           this.passengerTurnTracker.reset(this.player.root.position, this.player.heading);
         }
         this.drivingBehavior.update(fixedStep, this.player, this.worldQuery);
-        const collision = this.traffic.update(fixedStep, this.player);
+        const collision = this.traffic.update(fixedStep, this.player, this.worldQuery);
         // Arrest checks must see damage from this collision in the same physics step.
         if (collision.damagePercent > 0) this.damage.applyDamage(collision.damagePercent);
         if (this.ride.hasOnboardTrait(PassengerType.Lawful)
@@ -244,32 +325,39 @@ export class Game {
         if (this.ride.hasOnboardTrait(PassengerType.Compulsive)
           && this.passengerTurnTracker.update(this.player.root.position, this.player.heading)) this.ride.registerForbiddenTurn();
         this.ride.registerPursuit(this.police.isPursuitActive);
-        const policeTarget = this.policeTargetSnapshot();
-        if (collision.policeCollisionOfficerId !== null) {
-          this.police.registerPoliceCollision(
-            collision.policeCollisionOfficerId,
-            policeTarget,
-            collision.policeCollisionSeverity,
+        let citation: PoliceCitation | null = null;
+        if (!chaseStep) {
+          const policeTarget = this.policeTargetSnapshot();
+          if (collision.policeCollisionOfficerId !== null) {
+            this.police.registerPoliceCollision(
+              collision.policeCollisionOfficerId,
+              policeTarget,
+              collision.policeCollisionSeverity,
+            );
+          }
+          const {rates,severity} = policeInputForAmbulance(
+            this.drivingBehavior.rates,this.drivingBehavior.current,this.ambulanceDriver.isActive,
           );
-        }
-        const {rates,severity} = policeInputForAmbulance(
-          this.drivingBehavior.rates,this.drivingBehavior.current,this.ambulanceDriver.isActive,
-        );
-        const citation = this.police.update(
-          fixedStep,
-          policeTarget,
-          rates,
-          severity,
-          this.profile,
-        );
-        if (!citation && collision.collisionViolationSeverity > 0) {
-          this.police.registerTrafficCollision(
+          citation = this.police.update(
+            fixedStep,
             policeTarget,
-            collision.collisionViolationSeverity,
+            rates,
+            severity,
+            this.profile,
           );
+          if (!citation && collision.collisionViolationSeverity > 0) {
+            this.police.registerTrafficCollision(
+              policeTarget,
+              collision.collisionViolationSeverity,
+            );
+          }
+          for (const event of this.police.drainRideEvents()) this.ride.registerPoliceEvent(event);
+          this.ride.registerPursuit(this.police.isPursuitActive || citation !== null);
         }
-        for (const event of this.police.drainRideEvents()) this.ride.registerPoliceEvent(event);
-        this.ride.registerPursuit(this.police.isPursuitActive || citation !== null);
+        if (chaseStep) {
+          this.policeChase!.stepCombat(fixedStep);
+          if (!this.policeChase!.isActive) this.restoreAfterPoliceChase();
+        }
         trafficCollisionMph = Math.max(trafficCollisionMph, collision.ridePenaltyMph);
         this.currentPlayerPosition.copyFrom(this.player.root.position);
         this.currentPlayerHeading = this.player.heading;
@@ -286,6 +374,7 @@ export class Game {
       this.ride.registerTrafficCollision(trafficCollisionMph);
     }
     if (citationIssued) {
+      this.passengers?.resetPickup();
       this.physicsAccumulator = 0;
       this.previousPlayerPosition.copyFrom(this.currentPlayerPosition);
       this.previousPlayerHeading = this.currentPlayerHeading;
@@ -306,22 +395,34 @@ export class Game {
       this.performanceMonitor.endUiUpdate();
       return;
     }
-    this.rideOffers.update(
+    if (!GAME_CONFIG.gameplay.curbsidePassengersEnabled) this.rideOffers.update(
       deltaTime,
       !this.activity.hasActiveActivity,
       this.profile.ownedMissionLicenseIds,
     );
-    this.fuel.update(deltaTime, this.player, this.town.gasStations, this.profile, this.ui.isRefuelHeld);
-    this.damage.update(
-      deltaTime, this.player, this.town.autoBodyShops, this.profile, this.ui.isRepairHeld,
-      this.ride.hasOnboardTrait(PassengerType.Mechanic),
-    );
+    if (!this.policeChase?.isActive) {
+      this.fuel.update(deltaTime, this.player, this.town.gasStations, this.profile, this.ui.isRefuelHeld);
+      this.damage.update(
+        deltaTime, this.player, this.town.autoBodyShops, this.profile, this.ui.isRepairHeld,
+        this.ride.hasOnboardTrait(PassengerType.Mechanic),
+      );
+    }
     this.ride.registerVehicleCondition(this.fuel.fuelPercent, this.damage.damagePercent);
     this.ride.registerMechanicRepair(this.damage.lastRepairAmount);
     this.ride.registerStationStop(this.fuel.canUsePump);
     this.ride.registerPursuit(this.police.isPursuitActive);
     const previousRideState = this.ride.state;
-    this.ride.update(deltaTime, this.player, true, this.drivingBehavior.totals.total);
+    this.passengers?.update(deltaTime, this.player,
+      !this.activity.hasActiveActivity && !this.ui.blocksCurbsidePickup && !document.hidden,
+      encounter => {
+        if (encounter.kind === "patient") return this.startCurbsidePatient(encounter.offer);
+        const accepted = this.activity!.start(this.ride!, () =>
+          this.ride!.startCurbsideRide(encounter.offer, this.drivingBehavior!.totals));
+        if (accepted) this.manualWaypoint = null;
+        return accepted;
+      }, this.profile.ownsMissionLicense("ambulance_driver"), this.police.isPursuitActive);
+    this.ui.setCurbsidePickupCue(this.passengers?.nearbyCue ?? null);
+    this.ride.update(deltaTime, this.player, true, this.drivingBehavior.totals);
     if (previousRideState !== this.ride.state) {
       this.passengerDrivingEvents?.reset(this.player.root.position);
       this.passengerTurnTracker.reset(this.player.root.position, this.player.heading);
@@ -329,9 +430,13 @@ export class Game {
       if (this.ride.state === RideState.PassengerOnboard) this.ride.registerPursuit(this.police.isPursuitActive);
     }
     const ambulanceWasActive = this.ambulanceDriver.isActive;
-    this.ambulanceDriver.update(deltaTime);
+    this.ambulanceDriver.update(deltaTime, !document.hidden);
     if (ambulanceWasActive && !this.ambulanceDriver.isActive) this.restorePersonalVehicle();
     this.activity.update();
+    if (this.policeChase?.update(deltaTime, !this.activity.hasActiveActivity
+      && !this.ui.blocksCurbsidePickup && !this.police.isPursuitActive, simulatedSeconds)) this.startPoliceChase();
+    this.ui.setChaseState(this.policeChase?.hud ?? null);
+    this.updateRaceEncounterCue();
     this.profile.updateAutosave(deltaTime);
     if (this.worldQuery) {
       this.applyInterpolatedPlayerPose(this.physicsAccumulator / GAME_CONFIG.simulation.fixedStepSeconds);
@@ -354,8 +459,11 @@ export class Game {
     this.performanceMonitor.endUiUpdate();
   }
 
-  private buildSimulation(): void {
-    this.town = new TownGenerator(this.scene).generate();
+  private async buildSimulation(): Promise<void> {
+    this.town = await new TownGenerator(this.scene).generateAsync({
+      onProgress: progress => this.loadingOverlay.update(progress * .85),
+    });
+    await yieldToBrowser();
     this.ui.setTown(this.town);
     this.worldQuery = new WorldQuery(
       this.town.staticColliders,
@@ -393,17 +501,35 @@ export class Game {
       this.town.clinics,
     );
     this.activity = new ActivityManager();
-    this.racing = new RaceManager(this.scene, this.town);
-    this.ui.setRaceCourses(this.racing.courses);
+    this.racing = GAME_CONFIG.gameplay.racesEnabled ? new RaceManager(this.scene, this.town) : null;
+    this.ui.setRaceCourses(this.racing?.courses ?? new Map());
+    this.passengers = GAME_CONFIG.gameplay.curbsidePassengersEnabled
+      ? new PassengerManager(this.scene, this.town, this.worldQuery, this.player, this.profile.completedRides === 0) : null;
     this.drivingBehavior = new DrivingBehaviorManager();
     this.passengerDrivingEvents = new PassengerDrivingEvents(this.town.roadPositionsX, this.town.roadPositionsZ);
     this.fuel = new FuelManager();
+    this.loadingOverlay.update(.90);
+    await yieldToBrowser();
     this.traffic = new TrafficManager(this.scene, this.town.roadSpawnPoints, this.town.roadPositionsX, this.town.roadPositionsZ);
     const debugVision = new URLSearchParams(window.location.search).has("debug");
     this.police = new PoliceManager(this.traffic.policeCars, this.scene, debugVision);
+    this.policeChase = GAME_CONFIG.gameplay.policeChasesEnabled
+      ? new PoliceChaseManager(this.scene, this.town, this.worldQuery, this.traffic, this.player, this.profile, this.damage) : null;
+    this.raceEncounters = this.racing ? new RaceEncounterManager(this.scene, this.town,
+      this.racing.courses, this.traffic, this.worldQuery, this.player) : null;
   }
 
   private disposeSimulation(): void {
+    this.raceEncounters?.dispose();
+    this.raceEncounters = null;
+    this.raceResultSeconds = 0;
+    this.ui.setRaceEncounterCue(null);
+    this.policeChase?.dispose();
+    this.policeChase = null;
+    this.policeReturnState = null;
+    this.ui.setChaseState(null);
+    this.passengers?.dispose();
+    this.passengers = null;
     this.manualWaypoint = null;
     this.racing?.dispose();
     this.racing = null;
@@ -456,6 +582,7 @@ export class Game {
   }
 
   private acceptRide(categoryId: MissionLicenseId, id: string, regionId?: string): boolean {
+    if (GAME_CONFIG.gameplay.curbsidePassengersEnabled) return false;
     if (
       this.state !== GameState.Playing
       || !this.ride
@@ -469,7 +596,56 @@ export class Game {
     return accepted;
   }
 
+  private startPoliceChase(): boolean {
+    if (!this.policeChase || !this.activity || !this.player || !this.profile || !this.damage || !this.fuel
+      || this.state !== GameState.Playing || document.hidden || this.ui.blocksCurbsidePickup
+      || this.police?.isPursuitActive) return false;
+    if (!this.activity.start(this.policeChase, () => this.policeChase!.begin())) return false;
+    this.policeReturnState = { vehicleId: this.profile.equippedVehicleId,
+      damage: this.damage.damagePercent, fuel: this.fuel.fuelPercent };
+    this.manualWaypoint = null;
+    this.restorePlayerPhysicsPose();
+    this.player.equipVehicle(POLICE_VEHICLE, POLICE_VEHICLE.stats, true);
+    this.damage.damagePercent = 0;
+    this.fuel.fuelPercent = 1;
+    this.damage.canUseRepair = this.damage.isNearShop = this.damage.isRepairing = false;
+    this.fuel.canUsePump = this.fuel.isNearStation = this.fuel.isRefueling = false;
+    this.traffic!.chaseActive = true;
+    this.police?.resetDutyObservations();
+    this.capturePlayerPhysicsPose();
+    return true;
+  }
+
+  private restoreAfterPoliceChase(): void {
+    const saved = this.policeReturnState;
+    if (!saved || !this.player || !this.profile || !this.damage || !this.fuel) return;
+    const vehicle = getVehicleDefinition(saved.vehicleId) ?? STARTER_VEHICLE;
+    this.player.equipVehicle(vehicle, applyPermanentUpgrades(vehicle.stats, this.profile.upgrades), true);
+    this.damage.damagePercent = saved.damage;
+    this.fuel.fuelPercent = saved.fuel;
+    this.policeReturnState = null;
+    this.traffic!.chaseActive = false;
+    this.player.collisionBody.reportStaticImpacts = false;
+    this.police?.resetDutyObservations();
+    this.capturePlayerPhysicsPose();
+    this.activity?.update();
+  }
+
+  private startCurbsidePatient(offer: PackageDeliveryOffer): boolean {
+    if (!GAME_CONFIG.gameplay.ambulanceJobsEnabled || this.state !== GameState.Playing
+      || !this.ambulanceDriver || !this.activity || !this.player || !this.profile?.ownsMissionLicense("ambulance_driver")
+      || this.police?.isPursuitActive || this.ui.blocksCurbsidePickup || document.hidden) return false;
+    const accepted = this.activity.start(this.ambulanceDriver, () => this.ambulanceDriver!.startCurbsideJob(offer));
+    if (accepted) {
+      this.manualWaypoint = null;
+      this.player.equipVehicle(AMBULANCE_VEHICLE, AMBULANCE_VEHICLE.stats, true);
+      this.capturePlayerPhysicsPose();
+    }
+    return accepted;
+  }
+
   private acceptAmbulanceDriver(id: string, regionId?: string): boolean {
+    if (!GAME_CONFIG.gameplay.ambulanceJobsEnabled || !GAME_CONFIG.gameplay.regionalTrainingEnabled) return false;
     if (
       this.state !== GameState.Playing
       || !this.ambulanceDriver
@@ -489,6 +665,8 @@ export class Game {
   }
 
   private purchaseMissionLicense(id: MissionLicenseId): string {
+    if (id === "police_chase" && !GAME_CONFIG.gameplay.policeChasesEnabled) return "UNAVAILABLE";
+    if (id === "ambulance_driver" && !GAME_CONFIG.gameplay.ambulanceJobsEnabled) return "UNAVAILABLE";
     if (!this.profile || !this.rideOffers) return "LICENSES UNAVAILABLE";
     const license = getMissionLicense(id);
     if (!license) return "LICENSE NOT FOUND";
@@ -541,7 +719,7 @@ export class Game {
   }
 
   private applyCurrentEffectiveStats(): void {
-    if (!this.profile || !this.player || this.ambulanceDriver?.isActive) return;
+    if (!this.profile || !this.player || this.ambulanceDriver?.isActive || this.policeChase?.isActive) return;
     const vehicle = getVehicleDefinition(this.profile.equippedVehicleId) ?? STARTER_VEHICLE;
     this.player.applyEffectiveStats(applyPermanentUpgrades(vehicle.stats, this.profile.upgrades));
   }
@@ -565,6 +743,7 @@ export class Game {
   }
 
   private debugEquipVehicle(id: string): void {
+    if (this.ambulanceDriver?.isActive || this.policeChase?.isActive) return;
     if (!this.profile || !this.player || !this.profile.ownsVehicle(id)) return;
     const vehicle = getVehicleDefinition(id);
     if (!vehicle || !this.profile.equipVehicle(id)) return;
@@ -587,22 +766,41 @@ export class Game {
   }
 
   private purchaseRacingLicense(): string {
+    if (!GAME_CONFIG.gameplay.racesEnabled) return "RACING UNAVAILABLE";
     if (!this.profile) return "LICENSE UNAVAILABLE";
     if (this.profile.ownsRacingLicense) return "LICENSE ALREADY OWNED";
     return this.profile.purchaseRacingLicense() ? "RACING LICENSE UNLOCKED" : "INSUFFICIENT FUNDS";
   }
 
+  private canApproachRace(): boolean {
+    return this.state === GameState.Playing && !document.hidden && !this.activity?.hasActiveActivity
+      && !this.police?.isPursuitActive && !this.ui.blocksCurbsidePickup;
+  }
+
+  private updateRaceEncounterCue(): void {
+    const gathering = this.canApproachRace() ? this.raceEncounters?.getNearby() : null;
+    this.ui.setRaceEncounterCue(gathering ? {kind: !this.profile!.ownsRacingLicense ? "license"
+      : this.fuel!.hasFuel ? "enter" : "fuel", seconds: gathering.remainingSeconds} : null);
+  }
+
   private startRace(regionId: string): boolean {
+    if (!GAME_CONFIG.gameplay.racesEnabled || !this.canApproachRace()
+      || !this.raceEncounters?.canEnter(regionId)) return false;
     if (!this.racing || !this.player || !this.activity || !this.profile?.ownsRacingLicense
       || this.state !== GameState.Playing || this.police?.isPursuitActive
       || this.activity.hasActiveActivity || !this.fuel?.hasFuel) return false;
     this.restorePlayerPhysicsPose();
     const returnPose = { x: this.player.root.position.x, z: this.player.root.position.z, heading: this.player.heading };
-    if (!this.activity.start(this.racing, () => this.racing!.start(regionId, this.player!))) return false;
+    if (!this.activity.start(this.racing, () => this.racing!.start(regionId, this.player!, this.raceEncounters!.waiting!.grid))) return false;
+    this.raceEncounters!.consume();
+    this.ui.setRaceEncounterCue(null);
+    this.policeChase?.prepareForRace();
+    this.police?.resetDutyObservations();
     this.manualWaypoint = null;
     this.raceReturnPose = returnPose;
     this.raceStartPose = { x: this.player.root.position.x, z: this.player.root.position.z, heading: this.player.heading };
     this.raceResult = null;
+    this.raceResultSeconds = 0;
     this.traffic?.setSuspended(true);
     this.ui.closePhone();
     this.ui.closeShop();
@@ -611,24 +809,12 @@ export class Game {
     return true;
   }
 
-  private retryRace(): void {
-    if (this.racing?.state !== "FINISHED" || !this.player || !this.fuel?.hasFuel) return;
-    const id = this.racing.snapshot.regionId;
-    this.racing.abort();
-    this.activity?.update();
-    if (!this.activity?.start(this.racing, () => this.racing!.start(id, this.player!))) {
-      this.endRace(true);
-      return;
-    }
-    this.raceResult = null;
-    this.synchronizeRacePose();
-    this.updateRaceUi(0);
-  }
-
   private endRace(aborted: boolean): void {
     if (!this.racing || (!this.racing.isActive && !this.raceReturnPose)) return;
     const pose = aborted ? this.raceReturnPose : this.raceStartPose;
     this.racing.abort();
+    this.raceEncounters?.finishRace();
+    this.raceResultSeconds = 0;
     this.activity?.update();
     if (pose && this.player) {
       this.player.teleportTo(pose.x, pose.z, pose.heading);
@@ -646,7 +832,9 @@ export class Game {
     this.raceResult = null;
     this.raceReturnPose = null;
     this.raceStartPose = null;
+    this.policeChase?.resumeAfterRace();
     this.traffic?.setSuspended(false, this.player ?? undefined);
+    this.police?.resetDutyObservations();
     this.synchronizeRacePose();
     this.drivingBehavior?.update(0, this.player!, this.worldQuery!);
     this.state = GameState.Playing;
@@ -665,6 +853,14 @@ export class Game {
 
   private updateRace(deltaTime: number): void {
     const race = this.racing!, player = this.player!, input = this.input!;
+    if (race.state === "FINISHED") {
+      this.raceResultSeconds = Math.max(0, this.raceResultSeconds - deltaTime);
+      if (this.raceResultSeconds === 0) { this.endRace(false); return; }
+      input.consumeReset(); input.resetDrivingState();
+      this.profile!.updateAutosave(deltaTime);
+      this.updateRaceUi(deltaTime);
+      return;
+    }
     const fixedStep = GAME_CONFIG.simulation.fixedStepSeconds;
     this.restorePlayerPhysicsPose();
     this.physicsAccumulator = Math.min(this.physicsAccumulator + deltaTime,
@@ -679,30 +875,26 @@ export class Game {
           input.resetDrivingState();
           this.chaseCamera?.snapToPlayer();
         } else {
-          player.update(fixedStep, input, this.worldQuery!, this.fuel!.hasFuel, this.damage!.damagePercent);
+          player.update(fixedStep, input, this.worldQuery!, this.fuel!.hasFuel, this.damage!.damagePercent, true);
         }
         this.fuel!.update(fixedStep, player, [], this.profile!, false);
       } else {
         input.consumeReset();
         input.resetDrivingState();
       }
-      race.update(fixedStep, player);
+      race.update(fixedStep, player, this.worldQuery!);
       this.currentPlayerPosition.copyFrom(player.root.position);
       this.currentPlayerHeading = player.heading;
       this.physicsAccumulator -= fixedStep;
       const result = race.consumeResult();
       if (result) {
-        const profile = this.profile!;
-        const previousBest = profile.getBestRaceFinish(result.regionId);
-        const incomeBefore = profile.getRegionPassiveIncomePerSecond(result.regionId);
-        profile.recordRaceFinish(result.regionId, result.finishPlace);
-        this.raceResult = {
-          regionId: result.regionId, finishPlace: result.finishPlace, previousBest,
-          bestFinish: profile.getBestRaceFinish(result.regionId)!,
-          multiplier: profile.getRaceMultiplier(result.regionId), incomeBefore,
-          incomeAfter: profile.getRegionPassiveIncomePerSecond(result.regionId),
-        };
+        this.profile!.completeStreetRace(result);
+        this.raceResult = {regionId: result.regionId, finishPlace: result.finishPlace,
+          cashEarned: result.cashEarned ?? 0, passiveIncomeGain: result.passiveIncomeGain ?? 0};
+        this.raceResultSeconds = GAME_CONFIG.racing.encounters.resultSeconds;
         this.capturePlayerPhysicsPose();
+        this.physicsAccumulator = 0;
+        break;
       }
       if (race.state === "RACING" && !this.fuel!.hasFuel && player.getSpeedMph() < 1) {
         this.endRace(true);

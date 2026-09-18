@@ -1,4 +1,33 @@
 export const GAME_CONFIG = {
+  gameplay: {
+    // Keep the regional systems and save records available for later experiments.
+    regionalTrainingEnabled: false,
+    ambulanceJobsEnabled: true,
+    policeChasesEnabled: true,
+    racesEnabled: true,
+    curbsidePassengersEnabled: true,
+  },
+  passengers: {
+    // Waiting taxi passengers per developed block; 18/34 gives eighteen in this city.
+    averagePedestriansPerBlock: 18 / 34,
+    // Gameplay meters, converted using ride.metersPerWorldUnit.
+    pickupRadiusMeters: 10,
+    // Lower speeds and longer dwell times demand a more deliberate stop.
+    maximumPickupSpeedMph: 1,
+    pickupStopSeconds: 0.5,
+    respawnDelaySeconds: 30,
+    minimumRespawnDistanceMeters: 150,
+    firstPassengerDistanceMeters: 60,
+    // Keep spawning away from corners and other waiting people.
+    intersectionClearanceMeters: 25,
+    minimumSpacingMeters: 25,
+    // World units inward from the visible curb edge (not the road's collision boundary).
+    // 1.1 keeps the shoes just behind the raised curb while putting people in clear view.
+    sidewalkInset: 1.1,
+    // Source model uses real meters; fit the taxi's 10.2 / 4.98 world scale.
+    modelWorldScale: 10.2 / 4.98,
+    triangleBudget: 1500,
+  },
   presentation: {
     // Keep the roof behind the open pump lane, including the chase camera's reach.
     gasStation: {
@@ -26,6 +55,48 @@ export const GAME_CONFIG = {
       // Billboard center height; 33.6 is 20% higher than the former gas sign.
       billboardHeight: 33.6,
     },
+  },
+  vehicleCollisions: {
+    // Relative mass follows footprint; wider limits make vehicle size matter more in shoves.
+    minimumMass: 0.75, maximumMass: 1.75,
+    // Increase for bouncier impacts; zero shares momentum without rebound.
+    restitution: 0.05,
+    // Increase for more friction between touching panels (not tire grip).
+    contactFriction: 0.2,
+    // Suppress bounce below this closing speed, in world units/second.
+    bounceThreshold: 1,
+    // More iterations improve pileup stability at an additional contact-only CPU cost.
+    velocityIterations: 4, positionIterations: 2,
+    // Small tolerated overlap avoids contact flicker; correction is capped per pass.
+    penetrationSlop: 0.015, correctionFraction: 0.65, maximumCorrection: 0.8,
+    // Fast encounters subdivide motion, never AI, up to this limit.
+    maxContactSubsteps: 4, travelPerSubstepFraction: 0.45,
+    // Longer recovery keeps tire grip reduced for longer following a substantial hit.
+    gripRecoverySeconds: 0.85, impactGrip: 1.15,
+    // Increase to settle rotation faster; countersteering adds extra damping for the player.
+    angularDamping: 1.8, counterSteerDamping: 3,
+    // Small nudges remain physical without repeatedly retriggering a strong slide.
+    slideImpactThreshold: 1,
+    // NPCs yield to the initial shove, then progressively regain bounded steering/drive control.
+    reactionSeconds: 0.25, steeringRecoverySeconds: 0.8,
+    // NPC recovery steering is an acceleration-limited motor, not a heading snap.
+    recoverySteeringAcceleration: 3,
+    // A recovering racer can skip nearby steering samples, but must still cross every checkpoint.
+    recoveryWaypointRadius: 8,
+    // Only a nearly stopped car facing far away from its pre-impact heading gets the deliberate pause.
+    spinoutSpeedMph: 5, spinoutAngleDegrees: 100, spinoutConfirmSeconds: 0.15,
+    spinoutPauseSeconds: 3,
+    // Hysteresis keeps a turnaround from alternating with ordinary steering each frame.
+    maneuverEntryDegrees: 60, maneuverExitDegrees: 25,
+    maneuverForwardSpeed: 8, maneuverReverseSpeed: 6,
+    gearChangeSpeedMph: 0.5,
+    // Four possible arcs, each sampled this many times; only recovering cars run these probes.
+    maneuverProbeSeconds: 0.25, maneuverHorizonSeconds: 1.5, maneuverProbeSamples: 6,
+    maneuverSwitchMargin: 0.15,
+    // Race fallback counts failed maneuvering time, excluding the spin-out pause.
+    recoveryStuckSeconds: 12,
+    // Return to ordinary routing only after lateral slip, rotation and heading error settle.
+    settledSideSpeed: 0.6, settledYawRate: 0.15, settledHeadingError: 0.12,
   },
   simulation: {
     // Smaller steps make physics more stable but cost more CPU; larger steps are cheaper but feel less consistent.
@@ -89,9 +160,9 @@ export const GAME_CONFIG = {
       // Setbacks are measured inward from the block edge, leaving a clear sidewalk.
       downtownSetback: 6,
       residentialSetback: 12,
-      // Downtown wall-to-wall gaps in gameplay meters; seeded so reloads keep the same city.
-      downtownGapMinMeters: .5,
-      downtownGapMaxMeters: 3,
+      // Wall-to-wall gaps as fractions of the starter taxi's visible width; seeded per seam.
+      downtownGapMinTaxiWidths: .75,
+      downtownGapMaxTaxiWidths: 1,
       // Common frontage depth keeps the roadside row aligned.
       frontageDepth: 44,
       houseMinSize: 28,
@@ -159,8 +230,6 @@ export const GAME_CONFIG = {
     yawRecovery: 2.8,
     // Increase for a higher maximum turn rate; decrease to cap steering more tightly.
     maxYawRate: 2.35,
-    // Increase for more speed lost in a collision; decrease for collisions that preserve more momentum.
-    collisionSpeedLoss: 0.45,
     // Increase to retain more steering authority on sidewalks; decrease for weaker sidewalk steering.
     sidewalkHandlingMultiplier: 0.5,
     // Increase to retain more tire grip on sidewalks; decrease for slipperier sidewalks.
@@ -184,10 +253,31 @@ export const GAME_CONFIG = {
     },
   },
   racing: {
-    // Three-hour demo target: reachable after learning both job types and training a few regions.
-    licenseCost: 3000,
+    // Permanent phone license; each street race pays again, with no per-entry fee.
+    licenseCost: 10000,
+    encounters: {
+      // Independent probability per developed block each check, not a fixed population.
+      // At most one gathering; unsafe, visible or highway grids are skipped.
+      spawnChancePerBlock: 0.01,
+      // Also used as the cooldown after a gathering expires or a race ends.
+      spawnCheckSeconds: 60,
+      waitingSeconds: 180,
+      entryRadiusMeters: 50,
+      minimumSpawnDistanceMeters: 300,
+      resultSeconds: 3,
+    },
+    // Indexed by finishing place minus one. Income is permanent DOLLARS per second.
+    finishRewards: [
+      { cash: 10000, incomePerSecond: 10 },
+      { cash: 5000, incomePerSecond: 3 },
+      { cash: 2000, incomePerSecond: 1.5 },
+      { cash: 1000, incomePerSecond: 0.5 },
+      { cash: 500, incomePerSecond: 0.1 },
+      { cash: 100, incomePerSecond: 0.05 },
+      { cash: 0, incomePerSecond: 0 },
+    ],
     aiCount: 6,
-    // Rewards are indexed by place minus one; results save place so tuning applies to existing saves.
+    // Retained legacy regional multipliers. Street-race income uses finishRewards above.
     finishMultipliers: [3, 2.5, 2, 1.6, 1.3, 1.15, 1],
     countdownSeconds: 3,
     // Larger gates are easier to hit; keep them within the street width.
@@ -211,7 +301,6 @@ export const GAME_CONFIG = {
       { topSpeed: 180, acceleration: 29, turning: 1.5, braking: 40, color: "#d56f70" },
       { topSpeed: 220, acceleration: 35, turning: 1.8, braking: 46, color: "#e5e9ee" },
     ],
-    collision: { speedRetention: 0.8 },
     // Keep ordinary vehicles safely away when normal traffic resumes.
     trafficResumeClearance: 45,
     // Opponents clear the finish before disappearing, avoiding a pileup on the finish gate.
@@ -237,6 +326,8 @@ export const GAME_CONFIG = {
     height: 10,
     // Increase to look farther ahead of the car; decrease to center the view closer to the car.
     lookAhead: 18,
+    // Frame the taller ambulance without filling the lower view with its rear doors.
+    ambulance: { distance: 22, height: 13, lookAhead: 14 },
     // Increase to make camera position catch up faster; decrease for heavier, smoother camera movement.
     positionDamping: 7.5,
     // Increase to make camera aim catch up faster; decrease for slower aim movement.
@@ -251,6 +342,29 @@ export const GAME_CONFIG = {
   graphics: {
     // Choose enhanced for improved models and sunlight, or original for the prior rendering.
     defaultMode: "enhanced" as "original" | "enhanced",
+    // Starter player cab only; procedural retains the old model for comparisons.
+    playerCabModel: "blender" as "procedural" | "blender",
+    // All ordinary downtown apartments, including corners; pilot retains the four-building comparison.
+    apartmentModel: "all" as "procedural" | "pilot" | "all",
+    apartmentPilot: { blockId: "block-2-2", facing: 2, count: 4 },
+    // Static gas buildings/pumps and repair shops; procedural keeps the comparison models.
+    serviceModel: "blender" as "procedural" | "blender",
+    // Neighborhood art experiment. Independent switches; reload after changing either.
+    // 3k/6k are triangle ceilings, not targets. Both high-detail models start enabled.
+    houseModel: "blender6k" as "procedural" | "blender3k" | "blender6k",
+    trafficModel: "blender6k" as "procedural" | "blender3k" | "blender6k",
+    // Share house geometry; debug comparison: ?debug&houseInstances=off.
+    houseInstancing: true,
+    // Keep the full model nearby, and the matching simpler model beyond this camera distance.
+    houseLodEnabled: true,
+    houseLodDistance: 300,
+    // Rendering only, not streamed gameplay chunks. Smaller batches cull more precisely.
+    worldChunkBlocks: 1,
+    // Yield between city construction steps after this much CPU work (soft budget).
+    startupWorkBudgetMs: 8,
+    neighborhoodTriangleBudgets: { blender3k: 3000, blender6k: 6000 },
+    // Deliberate city-wide ceilings for 623 residential houses. Existing asset caps stay below.
+    neighborhoodWorldTriangleBudgets: { blender3k: 1500000, blender6k: 3200000 },
     // Environment colors, district architecture, and lighting are in world/CityStyle.ts.
     // Increase for rounder body corners; decrease for squarer silhouettes.
     vehicleBodyBevel: 0.22,
@@ -259,10 +373,10 @@ export const GAME_CONFIG = {
     // Increase to permit more vehicle detail; decrease to enforce simpler generated meshes.
     playerTriangleBudget: 1500,
     trafficTriangleBudget: 1000,
-    // Increase to permit more architectural geometry; decrease to enforce simpler buildings.
-    buildingTriangleBudget: 1600,
-    // Static city budget includes the busiest corner facades; raise only after a route benchmark.
-    worldTriangleBudget: 280000,
+    // Includes the two detailed street faces of a corner apartment.
+    buildingTriangleBudget: 2400,
+    // City-wide apartment/service art ceiling. Frame-time profiling follows this asset batch.
+    worldTriangleBudget: 380000,
     // Increase for longer debug frame history; decrease for a smaller rolling sample window.
     performanceSampleCount: 3600,
     // Original wheel detail is retained for developer before/after comparisons.
@@ -496,7 +610,6 @@ export const GAME_CONFIG = {
     // Increase the clearance police require before accepting a path; decrease to fit through tighter gaps.
     pursuitAvoidanceClearance: 7,
     // Increase the time police spend recovering after a crash; decrease for faster pursuit recovery.
-    pursuitRecoverySeconds: 4,
     pursuitArrestSpeedMph: 15,
     pursuitAttackRangeMeters: 35,
     pursuitRamClosingSpeedMph: 20,
@@ -508,9 +621,6 @@ export const GAME_CONFIG = {
     // Fraction of total vehicle health for a clean hit at the target closing speed.
     pursuitRamMaxDamage: 0.25,
     pursuitRamMinimumImpactMph: 3,
-    pursuitSpinRate: 3.4,
-    pursuitSpinDamping: 1.8,
-    pursuitSlideSeconds: 1.2,
     // The bust range is derived from vehicle lengths plus pursuitCaptureGapMeters.
     // Escape distance is in gameplay meters after applying ride.metersPerWorldUnit.
     // Increase the seconds needed in arrest range; decrease for faster arrest.
@@ -530,7 +640,10 @@ export const GAME_CONFIG = {
     // Change this key to start a separate save slot; normally leave it unchanged.
     saveKey: "delivery-driver-progression-v1",
     // Increase when the saved data format changes so migrations can distinguish old saves.
-    saveVersion: 9,
+    saveVersion: 13,
+    // Permanent dollars/second added per completed curbside ride, by final displayed stars.
+    // $0.03 = 3 cents/sec. Existing earned income is preserved when tuning future rewards.
+    taxiIncomePerSecondByStars: { 1: 0.001, 2: 0.003, 3: 0.01, 4: 0.02, 5: 0.03 },
     // Increase for more starting cash; decrease for a harder start.
     startingMoney: 100,
     // Increase to save less often; decrease for more frequent crash protection.
@@ -550,6 +663,7 @@ export const GAME_CONFIG = {
     missionLicenseUnlockCosts: {
       taxi: 0,
       ambulance_driver: 250,
+      police_chase: 1000,
     },
     // Regional AI-training progression. These values drive save clamping, map
     // totals, completion bars, category cards, and passive income calculations.
@@ -644,20 +758,63 @@ export const GAME_CONFIG = {
     // Prefer widely separated dealerships without using highway roads.
     minimumSpacing: 600,
   },
+  policeChase: {
+    spawnChancePerBlock: 0.01,
+    spawnCheckSeconds: 60,
+    minimumSpawnDistanceMeters: 300,
+    retireDistanceMeters: 300,
+    closingRadiusMeters: 250,
+    nearbyRadiusMeters: 50,
+    engagementSeconds: 2,
+    escapeDistanceMeters: 300,
+    escapeSeconds: 15,
+    passiveIncomePerWin: 1,
+    // Speeds are mph here, converted at the controller boundary.
+    policeTopSpeedMph: 105,
+    suspectTopSpeedMph: 95,
+    ambientTopSpeedMph: 65,
+    cornerSpeedMph: 38,
+    policeHandling: { acceleration: 26, turning: 1.1, braking: 32 },
+    suspectHandling: { acceleration: 22, turning: 1, braking: 30 },
+    weaveAmplitude: 19,
+    weavePeriodSeconds: 5,
+    navigationLookAhead: 35,
+    routeChoiceDistance: 80,
+    fullImpactSpeedMph: 60,
+    suspectMaxImpactDamage: 0.33,
+    policeMaxImpactDamage: 0.03,
+    damageCooldownSeconds: 1,
+    shotMinSeconds: 3.8,
+    shotMaxSeconds: 5.2,
+    shotNearMeters: 30,
+    shotFarMeters: 120,
+    shotNearDamage: 0.08,
+    shotFarDamage: 0.02,
+    tracerSeconds: 0.1,
+    hitFlashSeconds: 0.18,
+    lightFlashSeconds: 0.35,
+    policeTriangleBudget: 2000,
+    suspectTriangleBudget: 3000,
+  },
   ambulanceDriver: {
-    // Change this to change the repeatable sequence of generated patient calls.
+    // Independently tune roadside patients; 3/34 gives three in the current developed city.
+    averagePatientsPerBlock: 4 / 34,
+    passiveIncomePerDelivery: 0.05,
+    patientTriangleBudget: 1500,
+    vehicleTriangleBudget: 2000,
+    // Legacy regional-offer seed; curbside patients share the encounter population RNG.
     offerSeed: 31991,
     // Increase payout per meter; decrease ambulance-job earnings.
     ratePerMeter: 0.2,
-    // Increase to make payout decay more slowly; decrease for harsher time pressure.
-    fareDecayPercentPerSecond: 0.002,
-    // Patients must be farther than this many meters from their destination clinic.
-    minDropoffDistance: 400,
+    // Fraction of INITIAL cash payout lost each second after pickup; .01 reaches zero in 100 seconds.
+    fareDecayPercentPerSecond: 0.01,
+    // Inclusive straight-line gameplay meters. Never fall back to a nearer clinic.
+    minDropoffDistance: 1000,
     // Standard ambulance handling is independent of the player's owned vehicles and upgrades.
     ambulanceStats: { acceleration: 16.38, topSpeed: 81, turning: 0.85, braking: 23.75 },
     // Alternation interval for the ambulance's emissive roof-light halves.
     lightFlashSeconds: 0.5,
-    // Increase to make patient pickup easier; decrease for more precise stopping.
+    // Legacy offer pickup radius; curbside patients use passengers.pickupRadiusMeters.
     pickupRadius: 20,
     // Increase to make clinic unloading easier; decrease for more precise stopping.
     dropoffRadius: 20,
@@ -721,6 +878,9 @@ export const GAME_CONFIG = {
       pursuitTipDecayMultiplier: 10,
       // Increase the tip reduction per violation point; decrease the illegal-driving penalty.
       violationTipPenaltyPerPoint: 0.02,
+      // Ride-only multipliers; police suspicion and backing-up grace are unchanged.
+      speedingPenaltyMultiplier: 2,
+      illegalDrivingPenaltyMultiplier: 4,
     },
     archetypes: {
       // Increase a weight to make that exclusive trait more common; decrease to make it rarer.
@@ -738,10 +898,8 @@ export const GAME_CONFIG = {
       hurriedGraceSeconds: 5,
       // Increase satisfaction loss for unmet trait speed requirements; decrease for gentler penalties.
       speedPenaltyPerSecond: 2,
-      // Increase the fraction of starting tip lost per red light; decrease for a smaller deduction.
-      redLightDeduction: 0.1,
-      // Increase the fraction lost per opposing-lane maneuver; decrease for a smaller deduction.
-      opposingLaneDeduction: 0.2,
+      // Also penalize unmet bonus requests at drop-off (station stop, escape, fuel/damage, yellow light).
+      penalizeMissedBonusRequests: true,
       // Increase the reward per yellow intersection visit; decrease for a smaller bonus.
       yellowBonus: 50,
       // Increase the reward for the first gas station stop; decrease for a smaller bonus.
@@ -777,6 +935,9 @@ export const GAME_CONFIG = {
     satisfaction: {
       // Increase starting score for happier passengers; decrease it for less initial goodwill.
       startingScore: 100,
+      // Stars lost for each forbidden maneuver, or for a missed request at drop-off.
+      // Applied after general driving penalties so one breach really costs two displayed stars.
+      traitViolationStars: 2,
       // Increase the delay before another collision penalty; decrease to penalize collisions more often.
       collisionCooldownSeconds: 5,
       // Increase the speed needed for a collision to hurt satisfaction; decrease to make gentler impacts matter.

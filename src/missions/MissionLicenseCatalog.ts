@@ -1,6 +1,6 @@
 import { GAME_CONFIG } from "../game/config";
 
-export type MissionLicenseId = "taxi" | "ambulance_driver";
+export type MissionLicenseId = "taxi" | "ambulance_driver" | "police_chase";
 
 export interface MissionLicenseDefinition {
   id: MissionLicenseId;
@@ -11,7 +11,7 @@ export interface MissionLicenseDefinition {
   fareMultiplier: number;
   maxTipPercent?: number;
   violationTipPenaltyMultiplier?: number;
-  activityType: "passengerRide" | "ambulanceDriver";
+  activityType: "passengerRide" | "ambulanceDriver" | "policeChase";
   unlockLocation: "phone";
   offerSeed: number;
 }
@@ -32,12 +32,18 @@ export const MISSION_LICENSES: readonly MissionLicenseDefinition[] = [
     id: "ambulance_driver",
     name: "Ambulance Driver",
     tabLabel: "AMBULANCE",
-    description: "Collect patients across the city and return them to this region's clinic.",
+    description: "Find injured people and race them to a clinic.",
     unlockCost: GAME_CONFIG.progression.missionLicenseUnlockCosts.ambulance_driver,
     fareMultiplier: 1,
     activityType: "ambulanceDriver",
     unlockLocation: "phone",
     offerSeed: GAME_CONFIG.ambulanceDriver.offerSeed,
+  },
+  {
+    id: "police_chase", name: "Police", tabLabel: "POLICE",
+    description: "Pursue and disable armed getaway cars.",
+    unlockCost: GAME_CONFIG.progression.missionLicenseUnlockCosts.police_chase,
+    fareMultiplier: 1, activityType: "policeChase", unlockLocation: "phone", offerSeed: 0,
   },
 ];
 

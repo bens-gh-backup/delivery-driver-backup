@@ -103,7 +103,7 @@ export interface DrivingViolationTotals {
 
 export type DrivingViolationRates = DrivingViolationTotals;
 
-export type TrafficVehicleRole = "civilian" | "police";
+export type TrafficVehicleRole = "civilian" | "police" | "suspect" | "race_waiting";
 
 export type PoliceOffense =
   | "SPEEDING"
@@ -176,6 +176,7 @@ export enum RideState {
 export type RideTier = "SHORT" | "MEDIUM" | "LONG";
 
 export interface RideOffer {
+  readonly curbside?: boolean;
   readonly training?: TrainingContext;
   id: string;
   missionCategoryId: MissionLicenseId;
@@ -193,6 +194,9 @@ export interface RideOffer {
 }
 
 export interface RideResult {
+  /** Only physical curbside rides grow the new global taxi income balance. */
+  curbside?: boolean;
+  passiveIncomeGain?: number;
   passengerName: string;
   passengerType: PassengerType;
   missionCategoryId: MissionLicenseId;

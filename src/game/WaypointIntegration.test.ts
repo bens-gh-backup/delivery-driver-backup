@@ -1,3 +1,5 @@
+import { GAME_CONFIG } from "./config";
+import { beforeAll, afterAll } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { describe, expect, it, vi } from "vitest";
 import { ActivityManager } from "../activity/ActivityManager";
@@ -16,7 +18,7 @@ function fixture() {
     police: { isPursuitActive: false, dispose: vi.fn() },
     player: { equipVehicle: vi.fn() },
     capturePlayerPhysicsPose: vi.fn(),
-    ui: { setRaceState: vi.fn(), closeShop: vi.fn() },
+    ui: { setChaseState: vi.fn(), setRaceState: vi.fn(), setRaceEncounterCue: vi.fn(), closeShop: vi.fn() },
   });
   const ride = { isActive: false, getObjectivePosition: () => new Vector3(20, 0, 30),
     acceptRide: vi.fn(() => { ride.isActive = true; return true; }), dispose: vi.fn() };
@@ -94,3 +96,8 @@ describe("manual waypoint integration", () => {
     expect(game.canSetManualWaypoint()).toBe(false);
   });
 });
+
+// These tests exercise the preserved legacy systems with their feature gates enabled.
+const savedGameplay = { ...GAME_CONFIG.gameplay };
+beforeAll(() => Object.assign(GAME_CONFIG.gameplay, {"regionalTrainingEnabled": true, "racesEnabled": true, "ambulanceJobsEnabled": true, "curbsidePassengersEnabled": false}));
+afterAll(() => Object.assign(GAME_CONFIG.gameplay, savedGameplay));

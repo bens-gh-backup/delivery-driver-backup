@@ -14,10 +14,14 @@ class PackageOfferPool {
     private readonly clinic: Clinic, private readonly region?: TrainingRegion) { this.refill(); }
   refill(): void {
     this.offers.length = 0;
-    for (let i = 0; i < 3; i++) this.offers.push(this.generateOffer());
+    for (let i = 0; i < 3; i++) {
+      const offer = this.generateOffer();
+      if (offer) this.offers.push(offer);
+    }
   }
-  generateOffer(): PackageDeliveryOffer {
+  generateOffer(): PackageDeliveryOffer | null {
     const pickupPoint = this.pickPickupPoint();
+    if (!pickupPoint) return null;
     const destinationPoint = this.clinic.destinationPoint;
     const pickupDistance = this.distanceInMeters(this.player.root.position, pickupPoint.position);
     const tripDistance = this.distanceInMeters(pickupPoint.position, destinationPoint.position);
@@ -32,15 +36,11 @@ class PackageOfferPool {
     };
   }
 
-  private pickPickupPoint(): DeliveryPoint {
+  private pickPickupPoint(): DeliveryPoint | null {
     const candidates = this.points.filter(point => this.distanceInMeters(point.position, this.clinic.destinationPoint.position)
-      > GAME_CONFIG.ambulanceDriver.minDropoffDistance);
+      >= GAME_CONFIG.ambulanceDriver.minDropoffDistance);
     if (candidates.length > 0) return candidates[Math.floor(this.rng() * candidates.length)];
-    return this.points.reduce((nearest, point) => {
-      return distanceXZ(this.player.root.position, point.position) < distanceXZ(this.player.root.position, nearest.position)
-        ? point
-        : nearest;
-    });
+    return null;
   }
 
   private distanceInMeters(a: Vector3, b: Vector3): number {

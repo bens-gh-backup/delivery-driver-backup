@@ -5,28 +5,29 @@ import { GAME_CONFIG } from "../game/config";
 import { PlayerCar } from "../player/PlayerCar";
 import { PlayerProfile } from "../player/PlayerProfile";
 import { TownGenerator } from "../world/Town";
+import { createPatientOffer } from "./PatientOffer";
 import { PackageDeliveryManager, PackageDeliveryState } from "./PackageDeliveryManager";
 
 describe("PackageDeliveryManager", () => {
-  it("offers three citywide patients more than 400m from the selected clinic", () => {
+  it("offers three citywide patients at least 1000m from the selected clinic", () => {
     const fixture = createFixture();
-    const offer = fixture.manager.offer;
+    const offer = fixture.manager.offer!;
 
     expect(fixture.manager.offers.getOffers(fixture.region.id)).toHaveLength(3);
-    expect(offer.tripDistance).toBeGreaterThan(GAME_CONFIG.ambulanceDriver.minDropoffDistance);
+    expect(offer.tripDistance).toBeGreaterThanOrEqual(GAME_CONFIG.ambulanceDriver.minDropoffDistance);
     expect(offer.destinationPoint).toBe(fixture.clinic.destinationPoint);
     expect(offer.initialPayout).toBeCloseTo(offer.tripDistance * GAME_CONFIG.ambulanceDriver.ratePerMeter);
     const roadsById = new Map(fixture.town.roads.map((road) => [road.id, road]));
     expect(roadsById.get(offer.pickupPoint.roadId)?.allowsMissionStops).toBe(true);
     expect(roadsById.get(offer.destinationPoint.roadId)?.allowsMissionStops).toBe(true);
     fixture.manager.update(30);
-    expect(fixture.manager.offer.id).toBe(offer.id);
+    expect(fixture.manager.offer!.id).toBe(offer.id);
     fixture.dispose();
   });
 
   it("decays payout from acceptance through pickup and pays the remainder at dropoff", () => {
     const fixture = createFixture();
-    const offer = fixture.manager.offer;
+    const offer = fixture.manager.offer!;
     const startingMoney = fixture.profile.money;
     expect(fixture.manager.acceptOffer(offer.id, fixture.region.id)).toBe(true);
 
@@ -46,12 +47,12 @@ describe("PackageDeliveryManager", () => {
     expect(fixture.manager.state).toBe(PackageDeliveryState.Idle);
     expect(fixture.manager.lastResult?.payout).toBeCloseTo(expectedPayout);
     expect(fixture.profile.money).toBeCloseTo(startingMoney + expectedPayout);
-    expect(fixture.manager.offer.id).not.toBe(offer.id);
+    expect(fixture.manager.offer!.id).not.toBe(offer.id);
     fixture.dispose();
   });
 
   it("requires the ambulance to slow down at both patient and clinic", () => {
-    const f=createFixture(), offer=f.manager.offer;
+    const f=createFixture(), offer=f.manager.offer!;
     expect(f.manager.acceptOffer(offer.id,f.region.id)).toBe(true);
     f.player.root.position.copyFrom(offer.pickupPoint.position);
     (f.player as unknown as {velocityX:number}).velocityX=100;
@@ -70,13 +71,42 @@ describe("PackageDeliveryManager", () => {
   it("ends an arrested patient job without payout or training credit", () => {
     const fixture = createFixture();
     const money = fixture.profile.money;
-    expect(fixture.manager.acceptOffer(fixture.manager.offer.id, fixture.region.id)).toBe(true);
+    expect(fixture.manager.acceptOffer(fixture.manager.offer!.id, fixture.region.id)).toBe(true);
     expect(fixture.manager.endForArrest()).toBe(true);
     expect(fixture.manager.isActive).toBe(false);
     expect(fixture.manager.lastResult).toBeNull();
     expect(fixture.profile.money).toBe(money);
     fixture.dispose();
   });
+  it("starts onboard only with a license and long enough route, pauses, decays to zero, and still rewards delivery", () => {
+    const f=createFixture();
+    const offer=createPatientOffer(f.manager.offer!.pickupPoint,f.town.clinics,()=>0,"curbside-patient")!;
+    expect(f.manager.startCurbsideJob(offer)).toBe(false);
+    f.profile.addMoney(1000);expect(f.profile.purchaseMissionLicense("ambulance_driver")).toBe(true);
+    expect(f.manager.startCurbsideJob({...offer,destinationPoint:offer.pickupPoint})).toBe(false);
+    f.player.root.position.copyFrom(offer.pickupPoint.position);
+    const money=f.profile.money;
+    expect(f.manager.startCurbsideJob(offer)).toBe(true);expect(f.manager.state).toBe(PackageDeliveryState.CarryingPackage);
+    expect(f.manager.getObjectivePosition()).toBe(offer.destinationPoint.position);
+    expect(f.manager.startCurbsideJob(offer)).toBe(false);
+    expect(f.manager.currentPayout).toBe(offer.initialPayout);
+    f.manager.update(60,false);expect(f.manager.elapsedSeconds).toBe(0);
+    f.manager.update(50);expect(f.manager.currentPayout).toBeCloseTo(offer.initialPayout*.5);
+    f.manager.update(100);expect(f.manager.currentPayout).toBe(0);expect(f.manager.isActive).toBe(true);
+    f.player.root.position.copyFrom(offer.destinationPoint.position);f.manager.update(0);
+    expect(f.manager.lastResult?.payout).toBe(0);expect(f.manager.lastResult?.passiveIncomeGain).toBe(.05);
+    expect(f.profile.money).toBe(money);expect(f.profile.passiveIncomePerSecond).toBe(.05);
+    f.manager.update(100);expect(f.profile.passiveIncomePerSecond).toBe(.05);f.dispose();
+  });
+
+  it("cancels curbside care on arrest without cash, income or a completion receipt", () => {
+    const f=createFixture();f.profile.addMoney(1000);f.profile.purchaseMissionLicense("ambulance_driver");
+    const offer=createPatientOffer(f.manager.offer!.pickupPoint,f.town.clinics,()=>0,"curbside-patient")!;
+    const money=f.profile.money;expect(f.manager.startCurbsideJob(offer)).toBe(true);
+    expect(f.manager.endForArrest()).toBe(true);expect(f.manager.lastResult).toBeNull();
+    expect(f.profile.money).toBe(money);expect(f.profile.passiveIncomePerSecond).toBe(0);f.dispose();
+  });
+
 });
 
 function createFixture() {

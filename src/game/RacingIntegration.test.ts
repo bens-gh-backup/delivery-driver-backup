@@ -1,3 +1,4 @@
+import { beforeAll, afterAll } from "vitest";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { describe, expect, it, vi } from "vitest";
 import { GAME_CONFIG } from "./config";
@@ -41,7 +42,7 @@ function createGameStub(): GameStub {
     ownsVehicle: vi.fn(() => false),
     getVehiclePurchaseQuote: vi.fn(() => ({ price: 1 })),
     purchaseVehicle: vi.fn(() => true),
-    recordRaceFinish: vi.fn(() => true),
+    completeStreetRace: vi.fn(result => { result.cashEarned = 5000; result.passiveIncomeGain = 3; return true; }),
     getBestRaceFinish: vi.fn(() => null),
     getRegionPassiveIncomePerSecond: vi.fn(() => 0.16),
     getRaceMultiplier: vi.fn(() => 1),
@@ -54,7 +55,8 @@ function createGameStub(): GameStub {
     racing,
     profile,
     fuel: { hasFuel: true, update: vi.fn() },
-    police: { isPursuitActive: false },
+    police: { isPursuitActive: false, resetDutyObservations: vi.fn() },
+    raceEncounters: { waiting: { grid: {player:{x:0,z:0},opponents:[]} }, canEnter: vi.fn(() => true), consume: vi.fn(), finishRace: vi.fn() },
     traffic: { setSuspended: vi.fn() },
     town: {
       autoBodyShops: [{ position: new Vector3(100, 0, 200) }],
@@ -64,6 +66,8 @@ function createGameStub(): GameStub {
       closePhone: vi.fn(),
       closeShop: vi.fn(),
       setRaceState: vi.fn(),
+      setRaceEncounterCue: vi.fn(),
+      blocksCurbsidePickup: false,
       showPlaying: vi.fn(),
       showRaceFeedback: vi.fn(),
     },
@@ -79,6 +83,7 @@ function createGameStub(): GameStub {
     previousPlayerHeading: 0.25,
     physicsAccumulator: 0,
     raceResult: null,
+    raceResultSeconds: GAME_CONFIG.racing.encounters.resultSeconds,
     raceReturnPose: null,
     raceStartPose: null,
     restorePlayerPhysicsPose: vi.fn(),
@@ -87,6 +92,7 @@ function createGameStub(): GameStub {
     applyInterpolatedPlayerPose: vi.fn(),
     updateRaceUi: vi.fn(),
     performanceMonitor: { beginUiUpdate: vi.fn(), endUiUpdate: vi.fn() },
+    canApproachRace: function(this: GameStub): boolean { return call<boolean>("canApproachRace", this); },
     canUseVehicleShop: function(this: GameStub): boolean {
       return (Game.prototype as any).canUseVehicleShop.call(this);
     },
@@ -94,10 +100,20 @@ function createGameStub(): GameStub {
 }
 
 describe("Game racing integration", () => {
+  it("returns automatically after the result duration without paying again", () => {
+    const game = createGameStub(); game.racing.state = "FINISHED"; game.endRace = vi.fn();
+    call<void>("updateRace", game, 2.9);
+    expect(game.endRace).not.toHaveBeenCalled();
+    call<void>("updateRace", game, .11);
+    expect(game.endRace).toHaveBeenCalledWith(false);
+    expect(game.profile.completeStreetRace).not.toHaveBeenCalled();
+  });
   it.each([
     ["without the racing license", (game: GameStub) => { game.profile.ownsRacingLicense = false; }],
     ["during an active job", (game: GameStub) => { game.activity.hasActiveActivity = true; }],
     ["during a police pursuit", (game: GameStub) => { game.police.isPursuitActive = true; }],
+    ["with a blocking menu", (game: GameStub) => { game.ui.blocksCurbsidePickup = true; }],
+    ["without a nearby live gathering", (game: GameStub) => { game.raceEncounters.canEnter.mockReturnValue(false); }],
     ["without fuel", (game: GameStub) => { game.fuel.hasFuel = false; }],
     ["outside the playing state", (game: GameStub) => { game.state = GameState.Paused; }],
   ])("does not start a race %s", (_label, mutate) => {
@@ -117,7 +133,7 @@ describe("Game racing integration", () => {
     game.manualWaypoint = new Vector3(20, 0, 30);
 
     expect(call<boolean>("startRace", game, "block-2-3")).toBe(true);
-    expect(game.racing.start).toHaveBeenCalledWith("block-2-3", game.player);
+    expect(game.racing.start).toHaveBeenCalledWith("block-2-3", game.player, game.raceEncounters.waiting.grid);
     expect(game.activity.start).toHaveBeenCalledTimes(1);
     expect(game.traffic.setSuspended).toHaveBeenCalledWith(true);
     expect(game.ui.closePhone).toHaveBeenCalledTimes(1);
@@ -148,7 +164,7 @@ describe("Game racing integration", () => {
     expect(game.traffic.setSuspended).toHaveBeenLastCalledWith(false, game.player);
     expect(game.raceReturnPose).toBeNull();
     expect(game.raceStartPose).toBeNull();
-    expect(game.profile.recordRaceFinish).not.toHaveBeenCalled();
+    expect(game.profile.completeStreetRace).not.toHaveBeenCalled();
   });
 
   it("records one consumed finish result and does not duplicate it on later updates", () => {
@@ -174,10 +190,10 @@ describe("Game racing integration", () => {
     game.physicsAccumulator = GAME_CONFIG.simulation.fixedStepSeconds;
     call<void>("updateRace", game, 0);
 
-    expect(game.profile.recordRaceFinish).toHaveBeenCalledTimes(1);
-    expect(game.profile.recordRaceFinish).toHaveBeenCalledWith("block-0-0", 2);
-    expect(game.racing.consumeResult).toHaveBeenCalledTimes(2);
-    expect(game.raceResult).toMatchObject({ regionId: "block-0-0", bestFinish: 2, multiplier: 2 });
+    expect(game.profile.completeStreetRace).toHaveBeenCalledTimes(1);
+    expect(game.profile.completeStreetRace).toHaveBeenCalledWith(result);
+    expect(game.racing.consumeResult).toHaveBeenCalledTimes(1);
+    expect(game.raceResult).toMatchObject({ regionId: "block-0-0", finishPlace: 2, cashEarned: 5000, passiveIncomeGain: 3 });
   });
 
   it.each(["COUNTDOWN", "RACING", "FINISHED"])("consumes fuel and applies existing damage only while driving in %s", state => {
@@ -191,7 +207,7 @@ describe("Game racing integration", () => {
     call<void>("updateRace", game, GAME_CONFIG.simulation.fixedStepSeconds);
     if (state === "RACING") {
       expect(game.player.update).toHaveBeenCalledWith(GAME_CONFIG.simulation.fixedStepSeconds,
-        game.input, game.worldQuery, true, 0.6);
+        game.input, game.worldQuery, true, 0.6, true);
       expect(game.fuel.update).toHaveBeenCalledWith(GAME_CONFIG.simulation.fixedStepSeconds,
         game.player, [], game.profile, false);
     } else {
@@ -212,7 +228,7 @@ describe("Game racing integration", () => {
     game.endRace = vi.fn();
     call<void>("updateRace", game, GAME_CONFIG.simulation.fixedStepSeconds);
     expect(game.endRace).toHaveBeenCalledWith(true);
-    expect(game.profile.recordRaceFinish).not.toHaveBeenCalled();
+    expect(game.profile.completeStreetRace).not.toHaveBeenCalled();
     expect(game.ui.showRaceFeedback).toHaveBeenCalledWith("OUT OF FUEL · RACE ENDED");
   });
 
@@ -237,3 +253,8 @@ describe("Game racing integration", () => {
     expect(game.player.equipVehicle).toHaveBeenCalledTimes(1);
   });
 });
+
+// These tests exercise the preserved legacy systems with their feature gates enabled.
+const savedGameplay = { ...GAME_CONFIG.gameplay };
+beforeAll(() => { Object.assign(GAME_CONFIG.gameplay, {"racesEnabled": true}); vi.stubGlobal("document", {hidden:false}); });
+afterAll(() => { Object.assign(GAME_CONFIG.gameplay, savedGameplay); vi.unstubAllGlobals(); });

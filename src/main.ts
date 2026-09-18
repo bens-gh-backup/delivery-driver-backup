@@ -16,6 +16,7 @@ const engine = new Engine(canvas, true, {
 });
 
 const game = new Game(engine, canvas, uiRoot);
+void game.initialize();
 game.startRenderLoop();
 
 window.addEventListener("resize", () => {

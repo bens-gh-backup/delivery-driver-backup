@@ -14,7 +14,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { createNoirBuilding, facadeColumnCount } from "../world/BuildingVisuals";
 import { CITY_STYLE, districtForBlock } from "../world/CityStyle";
 import { TownGenerator } from "../world/Town";
-import { resolveGraphicsMode, setSceneGraphicsMode } from "./GraphicsMode";
+import { resolveGraphicsMode, setSceneGraphicsMode, trafficModelForScene, worldTriangleBudgetForScene } from "./GraphicsMode";
 import { beveledRing, createLoftMesh } from "./FacetedMesh";
 
 const cleanup: (() => void)[]=[];
@@ -64,7 +64,10 @@ describe("enhanced graphics",()=>{
     const civilian=TrafficCar.createPrototype(scene,material,0),police=TrafficCar.createPolicePrototype(scene,material);
     for(const mesh of [civilian,police]) {
       validate(mesh);
-      expect(mesh.getTotalIndices()/3).toBeLessThanOrEqual(GAME_CONFIG.graphics.trafficTriangleBudget);
+      const model = trafficModelForScene(scene);
+      const budget = mesh === civilian && model !== "procedural"
+        ? GAME_CONFIG.graphics.neighborhoodTriangleBudgets[model] : GAME_CONFIG.graphics.trafficTriangleBudget;
+      expect(mesh.getTotalIndices()/3).toBeLessThanOrEqual(budget);
       const clone=mesh.clone("clone")!;
       expect(clone.geometry).toBe(mesh.geometry);clone.dispose();
     }
@@ -170,13 +173,13 @@ describe("enhanced graphics",()=>{
     expect(b.dealerships).toEqual(a.dealerships);
     expect(b.deliveryPoints).toEqual(a.deliveryPoints);
     expect(b.legalDrivingAreas).toEqual(a.legalDrivingAreas);
-    expect(b.meshes.length).toBeLessThan(210);
+    expect(b.meshes.filter(m => !m.isAnInstance).length).toBeLessThan(450);
     expect(b.districts).toEqual(a.districts);
-    expect(enhanced.scene.meshes.length).toBe(b.meshes.length);
+    expect(enhanced.scene.meshes.filter(m => !m.metadata?.housePrototype).length).toBe(b.meshes.length);
     // Three shared sign materials, one display-car material and one dealership facade.
     expect(enhanced.scene.materials.length).toBeLessThanOrEqual(25);
     expect(enhanced.scene.textures.map(t=>t.name)).toEqual(["fence-board-pattern"]);
     expect(enhanced.scene.textures[0].getSize()).toEqual({width:16,height:64});
-    expect(b.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThan(GAME_CONFIG.graphics.worldTriangleBudget);
+    expect(b.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThan(worldTriangleBudgetForScene(enhanced.scene));
   });
 });

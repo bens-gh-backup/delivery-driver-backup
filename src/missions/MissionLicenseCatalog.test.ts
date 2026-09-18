@@ -7,6 +7,7 @@ describe("MissionLicenseCatalog", () => {
     expect(MISSION_LICENSES.map(({ id, unlockCost, fareMultiplier }) => ({ id, unlockCost, fareMultiplier }))).toEqual([
       { id: "taxi", unlockCost: GAME_CONFIG.progression.missionLicenseUnlockCosts.taxi, fareMultiplier: 1 },
       { id: "ambulance_driver", unlockCost: GAME_CONFIG.progression.missionLicenseUnlockCosts.ambulance_driver, fareMultiplier: 1 },
+      { id: "police_chase", unlockCost: GAME_CONFIG.progression.missionLicenseUnlockCosts.police_chase, fareMultiplier: 1 },
     ]);
     expect(MISSION_LICENSES.map(({ id, unlockCost }) => [id, unlockCost])).toEqual(
       Object.entries(GAME_CONFIG.progression.missionLicenseUnlockCosts),

@@ -19,6 +19,7 @@ export enum PackageDeliveryState {
 }
 
 export interface PackageDeliveryOffer {
+  readonly curbside?: boolean;
   readonly training?: TrainingContext;
   id: string;
   pickupPoint: DeliveryPoint;
@@ -29,6 +30,8 @@ export interface PackageDeliveryOffer {
 }
 
 export interface PackageDeliveryResult {
+  curbside?: boolean;
+  passiveIncomeGain?: number;
   initialPayout: number;
   payout: number;
   pickupDistance: number;
@@ -39,7 +42,7 @@ export interface PackageDeliveryResult {
 export class PackageDeliveryManager {
   state = PackageDeliveryState.Idle;
   readonly offers: PackageOfferBoard;
-  get offer(): PackageDeliveryOffer { return this.activeOffer ?? this.offers.getOffers(this.offers.regions[0]?.id)[0]; }
+  get offer(): PackageDeliveryOffer | undefined { return this.activeOffer ?? this.offers.getOffers(this.offers.regions[0]?.id)[0]; }
   activeOffer: PackageDeliveryOffer | null = null;
   elapsedSeconds = 0;
   lastResult: PackageDeliveryResult | null = null;
@@ -72,7 +75,7 @@ export class PackageDeliveryManager {
   }
 
   get currentPayout(): number {
-    return (this.activeOffer?.initialPayout ?? this.offer.initialPayout) * this.payoutMultiplier;
+    return (this.activeOffer?.initialPayout ?? this.offer?.initialPayout ?? 0) * this.payoutMultiplier;
   }
 
   acceptOffer(id: string, regionId?: string): boolean {
@@ -89,7 +92,22 @@ export class PackageDeliveryManager {
     return true;
   }
 
-  update(deltaTime: number): void {
+  startCurbsideJob(offer: PackageDeliveryOffer): boolean {
+    if (this.isActive || !offer.curbside || !this.profile.ownsMissionLicense("ambulance_driver")
+      || distanceXZ(offer.pickupPoint.position, offer.destinationPoint.position) * GAME_CONFIG.ride.metersPerWorldUnit
+        < GAME_CONFIG.ambulanceDriver.minDropoffDistance) return false;
+    this.activeOffer = offer;
+    this.state = PackageDeliveryState.CarryingPackage;
+    this.elapsedSeconds = 0;
+    this.lastResult = null;
+    this.lastTrainingReward = null;
+    this.resultTimeRemaining = 0;
+    this.showMarker(offer.destinationPoint.position, new Color3(0.72, 0.35, 1), "ambulance-dropoff-marker");
+    return true;
+  }
+
+  update(deltaTime: number, active = true): void {
+    if (!active) return;
     this.resultTimeRemaining = Math.max(0, this.resultTimeRemaining - deltaTime);
     if (!this.activeOffer) return;
 
@@ -141,24 +159,27 @@ export class PackageDeliveryManager {
     if (!this.activeOffer) return;
     const payout = this.currentPayout;
     this.lastResult = {
+      curbside: this.activeOffer.curbside,
       initialPayout: this.activeOffer.initialPayout,
       payout,
       pickupDistance: this.activeOffer.pickupDistance,
       tripDistance: this.activeOffer.tripDistance,
       durationSeconds: this.elapsedSeconds,
     };
-    this.lastTrainingReward = this.profile.completeAmbulanceJob(payout, this.activeOffer.training);
+    if (this.activeOffer.curbside) this.profile.completeCurbsideAmbulanceJob(this.lastResult);
+    else this.lastTrainingReward = this.profile.completeAmbulanceJob(payout, this.activeOffer.training);
     this.resultTimeRemaining = GAME_CONFIG.presentation.resultSeconds;
     this.finishActivity();
   }
 
   private finishActivity(): void {
     const regionId = this.activeOffer?.training?.regionId;
+    const curbside = this.activeOffer?.curbside;
     this.marker?.setEnabled(false);
     this.activeOffer = null;
     this.state = PackageDeliveryState.Idle;
     this.elapsedSeconds = 0;
-    this.offers.refill(regionId);
+    if (!curbside) this.offers.refill(regionId);
   }
 
   private showMarker(position: Vector3, color: Color3, name: string): void {
