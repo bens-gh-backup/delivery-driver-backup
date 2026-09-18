@@ -1,3 +1,4 @@
+import { beforeAll, afterAll } from "vitest";
 import { describe, expect, it } from "vitest";
 import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
@@ -11,6 +12,7 @@ import { PackageDeliveryManager } from "../delivery/PackageDeliveryManager";
 import { GAME_CONFIG } from "../game/config";
 import { PassengerType, type DeliveryPoint, type RoadDefinition } from "../game/types";
 import type { PlayerCar } from "../player/PlayerCar";
+import { districtForBlock } from "../world/CityDistricts";
 
 function grid(nx = 7, nz = 7) {
   const xs = Array.from({ length: nx + 1 }, (_, i) => i * 425);
@@ -46,11 +48,20 @@ function fixture() {
 describe("regional AI training", () => {
   it.each([[6, 6], [7, 7], [4, 9], [9, 4]])("assigns legal road sides uniquely across a %i by %i map", (nx, nz) => {
     const town = grid(nx, nz), regions = createTrainingRegions(town);
-    expect(regions).toHaveLength(nx * nz);
+    const parkIds = new Set<string>();
+    for (let bz = 0; bz < nz; bz++) for (let bx = 0; bx < nx; bx++) {
+      if (districtForBlock(bx, bz, nx, nz) === "park") parkIds.add(`block-${bx}-${bz}`);
+    }
+    expect(regions).toHaveLength(nx * nz - parkIds.size);
+    expect(regions.every(region => !parkIds.has(region.id))).toBe(true);
     expect(regions.every(r => r.pickups.length > 0)).toBe(true);
     const assigned = regions.flatMap(r => r.pickups);
     expect(new Set(assigned).size).toBe(assigned.length);
-    expect(assigned).toHaveLength(town.deliveryPoints.filter(p => town.roads.find(r => r.id === p.roadId)!.allowsMissionStops).length);
+    const parkPoints = town.deliveryPoints.filter(p => {
+      const bx = Math.floor(p.position.x / 425), bz = Math.floor(p.position.z / 425);
+      return parkIds.has(`block-${bx}-${bz}`) && town.roads.find(r => r.id === p.roadId)!.allowsMissionStops;
+    });
+    expect(assigned).toHaveLength(town.deliveryPoints.filter(p => town.roads.find(r => r.id === p.roadId)!.allowsMissionStops).length - parkPoints.length);
     expect(regions.find(r => r.id === "block-2-2")?.bx).toBe(2);
     for (const region of regions) for (const p of region.pickups) {
       expect(p.position.x >= region.minX && p.position.x < region.maxX && p.position.z >= region.minZ && p.position.z < region.maxZ).toBe(true);
@@ -129,7 +140,7 @@ describe("regional AI training", () => {
     profile = new PlayerProfile(f.store); profile.configureTrainingRegions(f.regions);
     expect(profile.passiveIncomePerSecond).toBeCloseTo(f.regions.length*fullRegionIncome);
     profile.configureTrainingRegions(createTrainingRegions(grid(6, 6)));
-    expect(profile.passiveIncomePerSecond).toBeCloseTo(36*fullRegionIncome);
+    expect(profile.passiveIncomePerSecond).toBeCloseTo(34*fullRegionIncome);
     expect(profile.getTrainingCount("block-5-5", "taxi")).toBe(GAME_CONFIG.progression.training.taxi.requiredMissionsPerRegion);
     profile.configureTrainingRegions(f.regions.slice(0,1));
     expect(profile.passiveIncomePerSecond).toBeCloseTo(fullRegionIncome);
@@ -151,6 +162,28 @@ describe("regional AI training", () => {
     expect(clock.tick(9500, true)).toBe(.5);
     clock.reset();
     expect(clock.tick(99000, true)).toBe(0);
+  });
+
+  it("loads old park progress safely without counting it toward income or further work", () => {
+    const f = fixture(), regions = createTrainingRegions(grid(6, 6));
+    const completed = Object.fromEntries(TRAINING_CATEGORIES.map(category => [category.id, category.required]));
+    const parkId = "block-5-2";
+    f.store.save({ ...defaultProgression(), money: 321, racingLicenseOwned: true,
+      trainingProgress: Object.fromEntries([...regions.map(region => region.id), parkId].map(id => [id, completed])),
+      bestRaceFinishes: { [parkId]: 1 },
+    });
+    const profile = new PlayerProfile(f.store);
+    profile.configureTrainingRegions(regions);
+    const fullRegionIncome = TRAINING_CATEGORIES.reduce((sum, category) => sum + categoryIncome(category.id, category.required), 0);
+    expect(profile.money).toBe(321);
+    expect(profile.ownsRacingLicense).toBe(true);
+    expect(profile.passiveIncomePerSecond).toBeCloseTo(34 * fullRegionIncome);
+    expect(profile.completeAmbulanceJob(0, { regionId: parkId, categoryId: "ambulance_driver" })).toBeNull();
+    expect(profile.recordRaceFinish("block-5-3", 1)).toBe(false);
+    expect(new RideOfferBoard(f.points, f.player, regions).getOffers("taxi", parkId)).toEqual([]);
+    profile.saveNow();
+    // Keep historical records in the save; they are simply inactive under the current map.
+    expect(f.store.load()).toMatchObject({ money: 321, trainingProgress: { [parkId]: completed } });
   });
 
   it("keeps regional choices across navigation and movement, with independent timed passenger replacement", () => {
@@ -226,3 +259,8 @@ describe("regional AI training", () => {
     } finally { scene.dispose(); engine.dispose(); }
   });
 });
+
+// These tests exercise the preserved legacy systems with their feature gates enabled.
+const savedGameplay = { ...GAME_CONFIG.gameplay };
+beforeAll(() => Object.assign(GAME_CONFIG.gameplay, {"regionalTrainingEnabled": true}));
+afterAll(() => Object.assign(GAME_CONFIG.gameplay, savedGameplay));

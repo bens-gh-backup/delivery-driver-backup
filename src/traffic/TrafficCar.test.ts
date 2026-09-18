@@ -65,6 +65,50 @@ function createCarFixture(
 }
 
 describe("TrafficCar", () => {
+  it("lets a stopped car carry an impact for multiple ticks without the route snapping it back", () => {
+    const f = createCarFixture(0);
+    const car = f.car;
+    Object.assign(car, { accidentStateValue: "stopped" });
+    car.syncCollisionBody(0);
+    const x = car.mesh.position.x, z = car.mesh.position.z;
+    Object.assign(car.collisionBody, { velocityX: 25, velocityZ: 12,
+      angularVelocity: 1, changed: true, impulse: 30 });
+    car.applyCollisionBody();
+    car.update(1 / 60, []);
+    expect(car.mesh.position.x).toBeGreaterThan(x + .3);
+    expect(car.mesh.position.z).toBeGreaterThan(z + .15);
+    expect(car.getVelocityX()).toBeGreaterThan(20);
+    expect(car.getVelocityZ()).toBeGreaterThan(10);
+    const heading = car.mesh.rotation.y;
+    for (let i = 0; i < 30; i++) car.update(1 / 60, []);
+    expect(car.mesh.position.x).toBeGreaterThan(x + 8);
+    expect(car.mesh.rotation.y).toBeGreaterThan(heading);
+    for (let i = 0; i < 600; i++) car.update(1 / 60, []);
+    expect(car.speed).toBeLessThan(1);
+    expect(car.mesh.position.x).toBeGreaterThan(x + 8);
+    // Respawning clears both momentum and temporary recovery state.
+    car.respawn(car.waypoint, "east", .5);
+    expect(car.getVelocityX()).toBe(0);
+    expect(car.getVelocityZ()).toBe(0);
+    expect(car.collisionBody.angularVelocity).toBe(0);
+    f.dispose();
+  });
+
+  it("keeps moving after a moderate police sideswipe instead of applying an automatic stun", () => {
+    const f = createCarFixture(0, () => .25, "police"), car = f.car;
+    car.setPursuitTarget({ x: 1000, z: car.mesh.position.z }); car.syncCollisionBody(0);
+    Object.assign(car.collisionBody, { velocityX: 35, velocityZ: 8,
+      angularVelocity: .5, changed: true, impulse: 40 });
+    car.applyCollisionBody(); car.registerCollision(-1, .25, true);
+    const x = car.mesh.position.x;
+    for (let i = 0; i < 120; i++) {
+      car.update(1 / 60, []);
+      expect(car.pursuitRecoveryRemaining).toBe(0);
+    }
+    expect(car.mesh.position.x).toBeGreaterThan(x + 30);
+    expect(car.isPursuing).toBe(true); f.dispose();
+  });
+
   it("catches a starter-speed player and commits to rear-quarter contact", () => {
     const f = createCarFixture(90, () => 0.25, "police");
     const car = f.car;
@@ -96,28 +140,29 @@ describe("TrafficCar", () => {
     f.dispose();
   });
 
-  it("keeps a crash recovery to four seconds despite continued contact", () => {
-    const f = createCarFixture(80, () => 0.25, "police");
-    const car = f.car;
+  it("pauses a stopped, spun officer once for three seconds despite continued contact", () => {
+    const f = createCarFixture(0, () => .25, "police"), car = f.car;
     car.mesh.position.x = 500;
-    const target = { x: 700, z: 992, heading: Math.PI / 2, velocityX: 90 };
-    car.setPursuitTarget(target);
-    car.update(1 / 60, []);
-    car.registerCollision(-1, 0.22, true);
-    const heading = car.mesh.rotation.y;
-    for (let i = 0; i < 239; i++) {
+    const target = { x: 700, z: car.mesh.position.z, heading: Math.PI / 2, velocityX: 40 };
+    car.setPursuitTarget(target); car.syncCollisionBody(0);
+    Object.assign(car.collisionBody, { heading: -Math.PI / 2, angularVelocity: 0,
+      velocityX: 0, velocityZ: 0, changed: true, impulse: 30 });
+    car.applyCollisionBody(); car.registerCollision(-1, .22, true);
+    for (let i = 0; i < 9; i++) car.update(1 / 60, []);
+    expect(car.pursuitPhase).toBe("recover");
+    expect(car.pursuitRecoveryRemaining).toBeCloseTo(3 - 1 / 60);
+    for (let i = 0; i < 178; i++) {
       car.markCollisionContact(-1);
-      if (i === 60) car.registerCollision(-1, 0.01, false);
-      car.setPursuitTarget(target);
-      car.update(1 / 60, []);
+      if (i === 60) car.registerCollision(-1, .01, false);
+      car.setPursuitTarget(target); car.update(1 / 60, []);
       expect(car.pursuitPhase).toBe("recover");
+      expect(car.mesh.rotation.y).toBeCloseTo(-Math.PI / 2);
     }
-    expect(Math.abs(car.mesh.rotation.y - heading)).toBeGreaterThan(1);
     car.update(1 / 60, []);
+    expect(car.pursuitRecoveryRemaining).toBeCloseTo(0);
     expect(car.pursuitPhase).toBe("catchUp");
-    expect(car.speed).toBe(0);
-    car.update(1 / 60, []);
-    expect(car.speed).toBeGreaterThan(0);
+    car.respawn(car.waypoint, "east", .5);
+    expect(car.recovery.pauseUsed).toBe(false);
     f.dispose();
   });
 
@@ -570,12 +615,12 @@ describe("TrafficCar", () => {
     fixture.dispose();
   });
 
-  it("stabilizes and resumes pursuit with accumulated damage after a serious crash", () => {
+  it("retains serious crash damage without pausing an upright pursuing car", () => {
     const fixture = createCarFixture(GAME_CONFIG.traffic.maxSpeed, () => 0.25, "police");
     const { car } = fixture;
     car.setPursuitTarget({ x: 1800, z: 1000, heading: Math.PI / 2, velocityX: 40, velocityZ: 0 });
     car.registerCollision(99, 0.3, true);
-    expect(car.accidentState).toBe("pursuitRecovery");
+    expect(car.accidentState).toBe("driving");
     expect(car.damagePercent).toBeCloseTo(0.3);
 
     for (let step = 0; step < 41; step++) car.update(0.1, []);
@@ -584,14 +629,14 @@ describe("TrafficCar", () => {
     fixture.dispose();
   });
 
-  it("promotes a collision-triggered officer from accident braking into pursuit recovery", () => {
+  it("promotes an upright collision-triggered officer into pursuit without a stun", () => {
     const fixture = createCarFixture(GAME_CONFIG.traffic.maxSpeed, () => 0.25, "police");
     const { car } = fixture;
     car.registerCollision(-1, 0.2, true);
     expect(car.accidentState).toBe("braking");
 
     car.setPursuitTarget({ x: 1800, z: 1000, heading: Math.PI / 2, velocityX: 40, velocityZ: 0 });
-    expect(car.accidentState).toBe("pursuitRecovery");
+    expect(car.accidentState).toBe("driving");
     expect(car.isPursuing).toBe(true);
     fixture.dispose();
   });

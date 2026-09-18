@@ -55,7 +55,7 @@ describe("world surface separation", () => {
       expect(roof.max.z).toBeGreaterThan(wall.max.z);
     }
     for (let i = 0; i < town.autoBodyShops.length; i++) {
-      const wall = bounds.get(`repair-side-1-${i}`)!, roof = bounds.get(`repair-roof-${i}`)!;
+      const wall = (bounds.get(`repair-shell-${i}`) ?? bounds.get(`repair-side-1-${i}`))!, roof = bounds.get(`repair-roof-${i}`)!;
       expect(roof.min.y).toBeGreaterThanOrEqual(wall.max.y - .00001);
     }
     expect([...bounds.keys()].some(name => /^(gas|repair)-beam-/.test(name))).toBe(false);

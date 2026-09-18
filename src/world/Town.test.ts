@@ -16,16 +16,25 @@ describe("TownGenerator", () => {
     const town = new TownGenerator(scene).generate();
 
     // Scattered service locations occupy more render chunks, but remain a small static workload.
-    expect(town.meshes.length).toBeLessThan(210);
+    expect(town.meshes.filter(m => !m.isAnInstance).length).toBeLessThan(450);
     expect(town.staticColliders.length).toBeGreaterThan(300);
     expect(town.gasStations).toHaveLength(14);
     expect(town.autoBodyShops).toHaveLength(6);
-    expect(town.clinics).toHaveLength(GAME_CONFIG.world.blocksX * GAME_CONFIG.world.blocksZ);
+    const regions = createTrainingRegions(town);
+    expect(town.clinics).toHaveLength(town.districts.filter(block => block.district !== "park").length);
+    const owner = (position: { x: number; z: number }) => regions.find(region =>
+      position.x >= region.minX && position.x < region.maxX && position.z >= region.minZ && position.z < region.maxZ);
+    for (const service of [...town.gasStations, ...town.autoBodyShops, ...town.dealerships, ...town.clinics]) {
+      expect(owner(service.position), "Service must be inside a developed block").toBeDefined();
+    }
+    for (const point of town.deliveryPoints) expect(owner(point.position), "No pickups or dropoffs on a park curb").toBeDefined();
     expect(new Set(town.clinics.map(clinic => clinic.regionId)).size).toBe(town.clinics.length);
     for (const clinic of town.clinics) {
       const road = town.roads.find(road => road.id === clinic.destinationPoint.roadId);
       expect(road).toMatchObject({ type: "city", allowsMissionStops: true });
       expect(clinic.id).toBe(`clinic-${clinic.regionId.replace("block-", "")}`);
+      expect(owner(clinic.position)?.id).toBe(clinic.regionId);
+      expect(owner(clinic.destinationPoint.position)?.id).toBe(clinic.regionId);
     }
     expect(town.dealerships).toHaveLength(GAME_CONFIG.dealership.count);
     expect(town.legalDrivingAreas).toHaveLength(20 + GAME_CONFIG.dealership.count);
@@ -71,7 +80,7 @@ describe("TownGenerator", () => {
       )).toBe(false);
     }
     expect(scene.textures.map(t=>t.name)).toEqual(["fence-board-pattern"]);
-    expect(scene.meshes.length).toBe(town.meshes.length);
+    expect(scene.meshes.filter(m => !m.metadata?.housePrototype).length).toBe(town.meshes.length);
     scene.dispose();
     engine.dispose();
   });
@@ -125,7 +134,7 @@ describe("TownGenerator", () => {
     const scene = new Scene(engine);
     const town = new TownGenerator(scene).generate();
     const regions = createTrainingRegions(town);
-    expect(regions).toHaveLength(GAME_CONFIG.world.blocksX * GAME_CONFIG.world.blocksZ);
+    expect(regions).toHaveLength(town.districts.filter(block => block.district !== "park").length);
     expect(regions.every(region => region.pickups.length > 0)).toBe(true);
     expect(new Set(regions.flatMap(region => region.pickups)).size).toBe(town.deliveryPoints.length);
     const { roadPositionsX, roadPositionsZ } = town;
@@ -206,7 +215,7 @@ describe("TownGenerator", () => {
       }
     }
 
-    expect(town.meshes.length).toBeLessThan(210);
+    expect(town.meshes.filter(m => !m.isAnInstance).length).toBeLessThan(450);
     const query = new WorldQuery(
       town.staticColliders,
       town.roads,

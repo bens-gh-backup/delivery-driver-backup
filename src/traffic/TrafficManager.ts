@@ -3,14 +3,17 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import type { Scene } from "@babylonjs/core/scene";
 import type { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { GAME_CONFIG } from "../game/config";
-import type { TrafficCollisionInfo, TrafficWaypoint } from "../game/types";
+import type { BoxCollider, TrafficCollisionInfo, TrafficWaypoint, TrafficVehicleRole } from "../game/types";
 import { seededRandom } from "../utils/math";
-import { TrafficCar, type Direction } from "./TrafficCar";
+import { TrafficCar, type Direction, type TrafficDriver } from "./TrafficCar";
 import { TrafficSignalController } from "./TrafficSignalController";
 import { TrafficTurnSignals } from "./TrafficTurnSignals";
 import type { PlayerCar } from "../player/PlayerCar";
+import { chaseImpactDamage } from "../chase/ChaseRules";
 import { collisionDamagePercent } from "../player/DamageManager";
-import { findOrientedBoxCollision } from "./OrientedBoxCollision";
+import { VehicleContactSolver } from "../physics/VehicleContactSolver";
+import type { VehicleBody } from "../physics/VehicleBody";
+import type { WorldQuery } from "../world/WorldQuery";
 
 interface SafetyConflictDecision {
   allowCrash: boolean;
@@ -22,6 +25,11 @@ export class TrafficManager {
   readonly policeCars: TrafficCar[] = [];
   readonly trafficSignals: TrafficSignalController;
   private readonly turnSignals: TrafficTurnSignals;
+  chaseActive = false;
+  private readonly staticPrevious = new Map<number, Set<BoxCollider>>();
+  private readonly staticCurrent = new Map<number, Set<BoxCollider>>();
+  private playerStaticCooldown = 0;
+  private maximumVehicleRadius = Math.hypot(GAME_CONFIG.traffic.hitboxWidth, GAME_CONFIG.traffic.hitboxLength) / 2;
   activeCarCount = 0;
   lastCollisionCandidateCount = 0;
   private readonly rng = seededRandom(3777);
@@ -36,6 +44,9 @@ export class TrafficManager {
   private readonly fullSimulationByCar: boolean[] = [];
   private readonly damageCooldownByCar: number[] = [];
   private readonly indexByCar = new Map<TrafficCar, number>();
+  private readonly contactSolver = new VehicleContactSolver();
+  private readonly collisionBodies: VehicleBody[] = [];
+  private lastPlayerResetGeneration = -1;
   private readonly playerQueryResults: TrafficCar[] = [];
   private readonly trafficCollisionQueryResults: TrafficCar[] = [];
   private readonly previousContacts = new Set<string>();
@@ -126,9 +137,28 @@ export class TrafficManager {
     this.turnSignals = new TrafficTurnSignals(scene, this.cars);
   }
 
-  update(deltaTime: number, player: PlayerCar): TrafficCollisionInfo {
+  /** Append one reserved slot once; IDs remain stable for the contact solver's array lookup. */
+  addManagedCar(prototype: Mesh, driver: TrafficDriver, role: TrafficVehicleRole = "suspect"): TrafficCar {
+    const id = this.cars.length, waypoint = this.waypoints[0];
+    const car = new TrafficCar(id, role, waypoint,
+      this.pickValidDirection(waypoint, this.roadPositionsX.length, this.roadPositionsZ.length),
+      0, this.roadPositionsX, this.roadPositionsZ, this.rng, prototype);
+    car.driver = driver; car.syncCollisionBody(0); car.mesh.setEnabled(false);
+    this.maximumVehicleRadius = Math.max(this.maximumVehicleRadius, Math.hypot(car.collisionBody.halfWidth, car.collisionBody.halfLength));
+    this.cars.push(car); this.indexByCar.set(car,id); this.nearbyByCar.push([]);
+    this.updateAccumulatorByCar.push(0); this.updateDeltaByCar.push(0);
+    this.fullSimulationByCar.push(false); this.damageCooldownByCar.push(0);
+    return car;
+  }
+
+  queryVehicles(x: number, z: number, radius: number, results: TrafficCar[]): void {
+    this.queryNearby(x,z,radius,results);
+  }
+
+  update(deltaTime: number, player: PlayerCar, world?: WorldQuery): TrafficCollisionInfo {
     if (this.suspended) return this.noCollision;
     this.trafficSignals.update(deltaTime);
+    this.playerStaticCooldown = Math.max(0, this.playerStaticCooldown - deltaTime);
     for (let index = 0; index < this.damageCooldownByCar.length; index++) {
       this.damageCooldownByCar[index] = Math.max(0, this.damageCooldownByCar[index] - deltaTime);
     }
@@ -137,17 +167,16 @@ export class TrafficManager {
     this.prepareNpcSafety();
     for (let index = 0; index < this.cars.length; index++) {
       const updateDelta = this.updateDeltaByCar[index];
-      if (updateDelta <= 0) continue;
       const car = this.cars[index];
+      if (updateDelta <= 0) { car.syncCollisionBody(0); continue; }
       const nearby = this.nearbyByCar[index];
       this.queryNearby(car.mesh.position.x, car.mesh.position.z, GAME_CONFIG.traffic.lookAheadDistance, nearby);
-      car.update(updateDelta, nearby, this.trafficSignals.aspectFor(car.direction));
+      car.update(updateDelta, nearby, this.trafficSignals.aspectFor(car.direction), world, player.collisionBody);
     }
     for (const car of this.cars) car.beginCollisionFrame();
     this.currentContacts.clear();
     this.rebuildSpatialHash();
-    const collisionInfo = this.resolvePlayerCollisions(player);
-    this.resolveTrafficCollisions();
+    const collisionInfo = this.resolveVehicleCollisions(deltaTime, player, world);
     this.previousContacts.clear();
     for (const contact of this.currentContacts) this.previousContacts.add(contact);
     this.turnSignals.update(deltaTime);
@@ -164,130 +193,117 @@ export class TrafficManager {
     for (const material of this.materials) material.dispose();
   }
 
-  private resolvePlayerCollisions(player: PlayerCar): TrafficCollisionInfo {
-    const playerX = player.root.position.x;
-    const playerZ = player.root.position.z;
-    const playerBoundingRadius = Math.hypot(player.vehicleWidth / 2, player.vehicleLength / 2);
-    const trafficBoundingRadius = Math.hypot(
-      GAME_CONFIG.traffic.hitboxWidth / 2,
-      GAME_CONFIG.traffic.hitboxLength / 2,
-    );
-    const maximumCollisionDistance = playerBoundingRadius + trafficBoundingRadius;
-    let ridePenaltyMph = 0;
-    let damagePercent = 0;
-    let collisionViolationSeverity = 0;
-    let policeCollisionOfficerId: number | null = null;
-    let policeCollisionSeverity = 0;
-    this.queryNearby(
-      playerX,
-      playerZ,
-      Math.max(GAME_CONFIG.traffic.playerCollisionQueryRadius, maximumCollisionDistance),
-      this.playerQueryResults,
-    );
-    const nearbyCars = this.playerQueryResults;
-    this.lastCollisionCandidateCount = nearbyCars.length;
-    for (const car of nearbyCars) {
-      const dx = playerX - car.mesh.position.x;
-      const dz = playerZ - car.mesh.position.z;
-      if (dx * dx + dz * dz >= maximumCollisionDistance * maximumCollisionDistance) {
-        continue;
-      }
-      const collision = findOrientedBoxCollision(
-        {
-          x: playerX,
-          z: playerZ,
-          heading: player.heading,
-          halfWidth: player.vehicleWidth / 2,
-          halfLength: player.vehicleLength / 2,
-        },
-        {
-          x: car.mesh.position.x,
-          z: car.mesh.position.z,
-          heading: car.mesh.rotation.y,
-          halfWidth: GAME_CONFIG.traffic.hitboxWidth / 2,
-          halfLength: GAME_CONFIG.traffic.hitboxLength / 2,
-        },
-      );
-      if (!collision) {
-        continue;
-      }
-      const contactKey = `p:${car.id}`;
-      this.currentContacts.add(contactKey);
-      car.markCollisionContact(-1);
-      const newContact = !this.previousContacts.has(contactKey);
-      const { normalX: nx, normalZ: nz, depth } = collision;
-      const playerVelocityX = player.getVelocityX();
-      const playerVelocityZ = player.getVelocityZ();
-      const carVelocityX = car.getVelocityX();
-      const carVelocityZ = car.getVelocityZ();
-      const relativeVelocityX = playerVelocityX - carVelocityX;
-      const relativeVelocityZ = playerVelocityZ - carVelocityZ;
-      const relativeSpeedMph = Math.hypot(relativeVelocityX, relativeVelocityZ) * GAME_CONFIG.ride.mphPerWorldUnitPerSecond;
-      const closingSpeedMph = Math.max(0, -(relativeVelocityX * nx + relativeVelocityZ * nz) * GAME_CONFIG.ride.mphPerWorldUnitPerSecond);
-      const playerImpactSpeedMph = Math.max(
-        0,
-        -(playerVelocityX * nx + playerVelocityZ * nz)
-          * GAME_CONFIG.ride.mphPerWorldUnitPerSecond,
-      );
-      const npcResponsible = isNpcResponsibleForPlayerCollision(
-        car.mesh.rotation.y,
-        nx,
-        nz,
-        carVelocityX,
-        carVelocityZ,
-        playerVelocityX,
-        playerVelocityZ,
-      );
-      const directness = relativeSpeedMph > 0 ? closingSpeedMph / relativeSpeedMph : 0;
-      if (newContact && !npcResponsible) {
-        ridePenaltyMph = Math.max(ridePenaltyMph, player.getSpeedMph());
-      }
-      let ramImpact: import("./PursuitImpact").PursuitImpact | null = null;
-      const carIndex = this.indexByCar.get(car) ?? -1;
-      if (newContact && carIndex >= 0 && this.damageCooldownByCar[carIndex] <= 0) {
-        const impactSeverity = Math.min(
-          1,
-          closingSpeedMph / GAME_CONFIG.police.collisionFullSeveritySpeedMph,
-        );
-        ramImpact = car.createRamImpact(closingSpeedMph, directness, {
-          x: playerX, z: playerZ, heading: player.heading, vehicleLength: player.vehicleLength,
-        });
-        const impactDamage = ramImpact?.damage ?? collisionDamagePercent(closingSpeedMph, directness);
-        damagePercent += impactDamage;
-        car.registerCollision(
-          -1,
-          impactDamage,
-          ramImpact !== null || closingSpeedMph >= GAME_CONFIG.traffic.seriousCollisionSpeedMph,
-        );
-        const seriousEnoughForPolice = impactDamage >= GAME_CONFIG.police.collisionPoliceDamageThreshold;
-        if (!npcResponsible && seriousEnoughForPolice && car.role === "police" && policeCollisionOfficerId === null) {
-          policeCollisionOfficerId = car.id;
-          policeCollisionSeverity = impactSeverity;
-        }
-        if (!npcResponsible
-          && seriousEnoughForPolice
-          && playerImpactSpeedMph >= GAME_CONFIG.police.collisionMinimumImpactSpeedMph) {
-          collisionViolationSeverity = Math.max(
-            collisionViolationSeverity,
-            Math.min(1, playerImpactSpeedMph / GAME_CONFIG.police.collisionFullSeveritySpeedMph),
-          );
-        }
-        this.damageCooldownByCar[carIndex] = GAME_CONFIG.traffic.damageCooldownSeconds;
-      }
-      player.applyTrafficCollision(nx, nz, depth, newContact);
-      if (ramImpact) {
-        player.applyPursuitImpact(ramImpact);
-        car.applyPursuitImpact(ramImpact);
-      }
-      car.push(-nx * depth * 0.35, -nz * depth * 0.35);
+  private resolveVehicleCollisions(dt: number, player: PlayerCar, world?: WorldQuery): TrafficCollisionInfo {
+    if (player.resetGeneration !== this.lastPlayerResetGeneration) {
+      this.previousContacts.clear(); this.damageCooldownByCar.fill(0);
+      this.lastPlayerResetGeneration = player.resetGeneration;
+      this.staticPrevious.clear(); this.staticCurrent.clear(); this.playerStaticCooldown = 0;
     }
-    return {
-      ridePenaltyMph,
-      damagePercent,
-      collisionViolationSeverity,
-      policeCollisionOfficerId,
-      policeCollisionSeverity,
-    };
+    player.collisionBody.reportStaticImpacts = this.chaseActive;
+    player.syncCollisionBody(dt);
+    const solver = this.contactSolver;
+    solver.begin(); this.collisionBodies.length = 0; this.collisionBodies.push(player.collisionBody);
+    let maxTravel = Math.hypot(player.collisionBody.endX - player.collisionBody.startX,
+      player.collisionBody.endZ - player.collisionBody.startZ);
+    const trafficRadius = this.maximumVehicleRadius;
+    for (let i = 0; i < this.cars.length; i++) {
+      if (!this.fullSimulationByCar[i]) continue;
+      const body = this.cars[i].collisionBody;
+      this.collisionBodies.push(body);
+      maxTravel = Math.max(maxTravel, Math.hypot(body.endX - body.startX, body.endZ - body.startZ));
+    }
+    const playerRadius = Math.hypot(player.vehicleWidth, player.vehicleLength) / 2;
+    const margin = 2 * maxTravel + 2 * GAME_CONFIG.vehicleCollisions.maximumCorrection;
+    this.queryNearby(player.root.position.x, player.root.position.z,
+      Math.max(GAME_CONFIG.traffic.playerCollisionQueryRadius, playerRadius + trafficRadius + margin), this.playerQueryResults);
+    this.lastCollisionCandidateCount = this.playerQueryResults.length;
+    for (const car of this.playerQueryResults) {
+      if (!this.fullSimulationByCar[this.indexByCar.get(car)!]) continue;
+      if (Math.hypot(car.mesh.position.x - player.root.position.x, car.mesh.position.z - player.root.position.z)
+        <= playerRadius + trafficRadius + margin) solver.addPair(player.collisionBody, car.collisionBody);
+    }
+    for (let i = 0; i < this.cars.length; i++) {
+      if (!this.fullSimulationByCar[i]) continue;
+      const first = this.cars[i];
+      this.queryNearby(first.mesh.position.x, first.mesh.position.z, 2 * trafficRadius + margin, this.trafficCollisionQueryResults);
+      for (const second of this.trafficCollisionQueryResults) {
+        const j = this.indexByCar.get(second)!;
+        if (j <= i || !this.fullSimulationByCar[j]) continue;
+        this.lastCollisionCandidateCount++;
+        if (Math.hypot(first.mesh.position.x - second.mesh.position.x, first.mesh.position.z - second.mesh.position.z)
+          <= 2 * trafficRadius + margin) solver.addPair(first.collisionBody, second.collisionBody);
+      }
+    }
+    solver.step(this.collisionBodies, dt, world);
+    player.applyCollisionBody();
+    for (let i = 0; i < this.cars.length; i++) if (this.fullSimulationByCar[i]) this.cars[i].applyCollisionBody();
+    let ridePenaltyMph = 0, damagePercent = 0, collisionViolationSeverity = 0, policeCollisionSeverity = 0;
+    let policeCollisionOfficerId: number | null = null;
+    for (const event of solver.events) {
+      const car = this.cars[event.b.id], first = event.a.id < 0 ? null : this.cars[event.a.id];
+      const key = first ? `t:${first.id}:${first.respawnGeneration}:${car.id}:${car.respawnGeneration}`
+        : `p:${car.id}:${car.respawnGeneration}`;
+      this.currentContacts.add(key);
+      car.markCollisionContact(first?.id ?? -1); first?.markCollisionContact(car.id);
+      if (this.previousContacts.has(key)) continue;
+      const closingMph = event.closingSpeed * GAME_CONFIG.ride.mphPerWorldUnitPerSecond;
+      const directness = event.relativeSpeed > 0 ? event.closingSpeed / event.relativeSpeed : 0;
+      if (first) {
+        const damage = collisionDamagePercent(closingMph, directness);
+        const serious = closingMph >= GAME_CONFIG.traffic.seriousCollisionSpeedMph;
+        const suspectDamage = chaseImpactDamage(closingMph, directness, false);
+        first.registerCollision(car.id, first.role === "suspect" ? suspectDamage : damage, serious, false);
+        car.registerCollision(first.id, car.role === "suspect" ? suspectDamage : damage, serious, false);
+        continue;
+      }
+      const npcResponsible = isNpcResponsibleForPlayerCollision(event.bHeading, event.normalX, event.normalZ,
+        event.bVelocityX, event.bVelocityZ, event.aVelocityX, event.aVelocityZ);
+      if (!npcResponsible) ridePenaltyMph = Math.max(ridePenaltyMph,
+        Math.hypot(event.aVelocityX, event.aVelocityZ) * GAME_CONFIG.ride.mphPerWorldUnitPerSecond);
+      const index = this.indexByCar.get(car)!;
+      if (this.damageCooldownByCar[index] > 0) continue;
+      // Ram commitment still controls damage/recovery, but never adds a second physical impulse.
+      const ram = car.createRamImpact(closingMph, directness, {
+        x: event.aX, z: event.aZ, heading: event.aHeading, vehicleLength: player.vehicleLength,
+      }, { x: event.bX, z: event.bZ, heading: event.bHeading });
+      const damage = ram?.damage ?? collisionDamagePercent(closingMph, directness);
+      damagePercent += this.chaseActive ? chaseImpactDamage(closingMph,directness,true) : damage;
+      car.registerCollision(-1, car.role === "suspect" ? chaseImpactDamage(closingMph,directness,false) : damage, ram !== null || closingMph >= GAME_CONFIG.traffic.seriousCollisionSpeedMph);
+      const severity = Math.min(1, closingMph / GAME_CONFIG.police.collisionFullSeveritySpeedMph);
+      if (!this.chaseActive && !npcResponsible && damage >= GAME_CONFIG.police.collisionPoliceDamageThreshold) {
+        if (car.role === "police" && policeCollisionOfficerId === null) {
+          policeCollisionOfficerId = car.id; policeCollisionSeverity = severity;
+        }
+        const playerImpactMph = Math.max(0, -(event.aVelocityX * event.normalX + event.aVelocityZ * event.normalZ))
+          * GAME_CONFIG.ride.mphPerWorldUnitPerSecond;
+        if (playerImpactMph >= GAME_CONFIG.police.collisionMinimumImpactSpeedMph)
+          collisionViolationSeverity = Math.max(collisionViolationSeverity,
+            Math.min(1, playerImpactMph / GAME_CONFIG.police.collisionFullSeveritySpeedMph));
+      }
+      this.damageCooldownByCar[index] = GAME_CONFIG.traffic.damageCooldownSeconds;
+    }
+    for (const contacts of this.staticCurrent.values()) contacts.clear();
+    for (const event of solver.staticEvents) {
+      const id = event.body.id;
+      let contacts = this.staticCurrent.get(id);
+      if (!contacts) { contacts = new Set(); this.staticCurrent.set(id,contacts); }
+      contacts.add(event.collider);
+      if (this.staticPrevious.get(id)?.has(event.collider)) continue;
+      const directness = event.relativeSpeed > 0 ? event.closingSpeed/event.relativeSpeed : 0;
+      const amount = chaseImpactDamage(event.closingSpeed * GAME_CONFIG.ride.mphPerWorldUnitPerSecond,directness,id<0);
+      if (id < 0) {
+        if (this.chaseActive && this.playerStaticCooldown <= 0 && amount > 0) {
+          damagePercent += amount; this.playerStaticCooldown = GAME_CONFIG.policeChase.damageCooldownSeconds;
+        }
+      } else this.cars[id].driver?.damage(amount);
+    }
+    for (const contacts of this.staticPrevious.values()) contacts.clear();
+    for (const [id,contacts] of this.staticCurrent) {
+      let previous = this.staticPrevious.get(id);
+      if (!previous) { previous = new Set(); this.staticPrevious.set(id,previous); }
+      for (const collider of contacts) previous.add(collider);
+    }
+    return { ridePenaltyMph, damagePercent, collisionViolationSeverity, policeCollisionOfficerId, policeCollisionSeverity };
   }
 
   private prepareNpcSafety(): void {
@@ -299,7 +315,7 @@ export class TrafficManager {
     for (let firstIndex = 0; firstIndex < this.cars.length; firstIndex++) {
       if (!this.fullSimulationByCar[firstIndex]) continue;
       const first = this.cars[firstIndex];
-      if (first.isPursuing) continue;
+      if (first.isPursuing || first.role === "suspect") continue;
       this.queryNearby(
         first.mesh.position.x,
         first.mesh.position.z,
@@ -308,7 +324,7 @@ export class TrafficManager {
       );
       for (const second of this.trafficCollisionQueryResults) {
         const secondIndex = this.indexByCar.get(second) ?? -1;
-        if (secondIndex <= firstIndex || !this.fullSimulationByCar[secondIndex] || second.isPursuing) continue;
+        if (secondIndex <= firstIndex || !this.fullSimulationByCar[secondIndex] || second.isPursuing || second.role === "suspect") continue;
         if (!willVehiclesConflict(first, second, horizon, GAME_CONFIG.traffic.predictiveSafetyClearance)) {
           continue;
         }
@@ -317,11 +333,11 @@ export class TrafficManager {
         let decision = this.safetyConflictDecisions.get(key);
         if (!decision) {
           decision = {
-            allowCrash: shouldAllowIntentionalCrash(
+            allowCrash: first.role !== "race_waiting" && second.role !== "race_waiting" && shouldAllowIntentionalCrash(
               this.rng,
               GAME_CONFIG.traffic.intentionalCrashChanceDenominator,
             ),
-            yielderId: chooseSafetyYielder(first, second).id,
+            yielderId: first.role === "race_waiting" ? second.id : second.role === "race_waiting" ? first.id : chooseSafetyYielder(first, second).id,
           };
           this.safetyConflictDecisions.set(key, decision);
         }
@@ -332,74 +348,6 @@ export class TrafficManager {
     for (const key of this.safetyConflictDecisions.keys()) {
       if (!this.currentSafetyConflicts.has(key)) this.safetyConflictDecisions.delete(key);
     }
-  }
-
-  private resolveTrafficCollisions(): void {
-    const boundingRadius = Math.hypot(
-      GAME_CONFIG.traffic.hitboxWidth / 2,
-      GAME_CONFIG.traffic.hitboxLength / 2,
-    );
-    const maximumCollisionDistance = boundingRadius * 2;
-    let candidateCount = 0;
-    for (let firstIndex = 0; firstIndex < this.cars.length; firstIndex++) {
-      if (!this.fullSimulationByCar[firstIndex]) continue;
-      const first = this.cars[firstIndex];
-      this.queryNearby(
-        first.mesh.position.x,
-        first.mesh.position.z,
-        maximumCollisionDistance,
-        this.trafficCollisionQueryResults,
-      );
-      for (const second of this.trafficCollisionQueryResults) {
-        const secondIndex = this.indexByCar.get(second) ?? -1;
-        if (secondIndex <= firstIndex || !this.fullSimulationByCar[secondIndex]) continue;
-        candidateCount += 1;
-        const dx = first.mesh.position.x - second.mesh.position.x;
-        const dz = first.mesh.position.z - second.mesh.position.z;
-        if (dx * dx + dz * dz >= maximumCollisionDistance * maximumCollisionDistance) continue;
-        const collision = findOrientedBoxCollision(
-          {
-            x: first.mesh.position.x,
-            z: first.mesh.position.z,
-            heading: first.mesh.rotation.y,
-            halfWidth: GAME_CONFIG.traffic.hitboxWidth / 2,
-            halfLength: GAME_CONFIG.traffic.hitboxLength / 2,
-          },
-          {
-            x: second.mesh.position.x,
-            z: second.mesh.position.z,
-            heading: second.mesh.rotation.y,
-            halfWidth: GAME_CONFIG.traffic.hitboxWidth / 2,
-            halfLength: GAME_CONFIG.traffic.hitboxLength / 2,
-          },
-        );
-        if (!collision) continue;
-
-        const contactKey = `t:${first.id}:${second.id}`;
-        this.currentContacts.add(contactKey);
-        first.markCollisionContact(second.id);
-        second.markCollisionContact(first.id);
-        const relativeVelocityX = first.getVelocityX() - second.getVelocityX();
-        const relativeVelocityZ = first.getVelocityZ() - second.getVelocityZ();
-        const relativeSpeedMph = Math.hypot(relativeVelocityX, relativeVelocityZ)
-          * GAME_CONFIG.ride.mphPerWorldUnitPerSecond;
-        const closingSpeedMph = Math.max(
-          0,
-          -(relativeVelocityX * collision.normalX + relativeVelocityZ * collision.normalZ)
-            * GAME_CONFIG.ride.mphPerWorldUnitPerSecond,
-        );
-        if (!this.previousContacts.has(contactKey)) {
-          const directness = relativeSpeedMph > 0 ? closingSpeedMph / relativeSpeedMph : 0;
-          const impactDamage = collisionDamagePercent(closingSpeedMph, directness);
-          const serious = closingSpeedMph >= GAME_CONFIG.traffic.seriousCollisionSpeedMph;
-          first.registerCollision(second.id, impactDamage, serious, false);
-          second.registerCollision(first.id, impactDamage, serious, false);
-        }
-        first.push(collision.normalX * collision.depth * 0.5, collision.normalZ * collision.depth * 0.5);
-        second.push(-collision.normalX * collision.depth * 0.5, -collision.normalZ * collision.depth * 0.5);
-      }
-    }
-    this.lastCollisionCandidateCount += candidateCount;
   }
 
   private rebuildSpatialHash(): void {
@@ -465,19 +413,19 @@ export class TrafficManager {
       let dx = car.mesh.position.x - player.root.position.x;
       let dz = car.mesh.position.z - player.root.position.z;
       let distanceSquared = dx * dx + dz * dz;
-      if (!car.isPursuing && distanceSquared > GAME_CONFIG.traffic.recycleRadius ** 2) {
+      if (!car.driver && !car.isPursuing && distanceSquared > GAME_CONFIG.traffic.recycleRadius ** 2) {
         this.recycleCar(car, index, player);
         dx = car.mesh.position.x - player.root.position.x;
         dz = car.mesh.position.z - player.root.position.z;
         distanceSquared = dx * dx + dz * dz;
       }
-      const enabled = distanceSquared <= reducedRadiusSquared;
+      const enabled = car.driver ? car.driver.enabled : distanceSquared <= reducedRadiusSquared;
       car.mesh.setEnabled(enabled);
       this.updateDeltaByCar[index] = 0;
       this.fullSimulationByCar[index] = false;
       if (!enabled) continue;
       this.activeCarCount += 1;
-      if (distanceSquared <= fullRadiusSquared) {
+      if (car.driver || distanceSquared <= fullRadiusSquared || car.collisionBody.dynamic) {
         this.fullSimulationByCar[index] = true;
         this.updateDeltaByCar[index] = deltaTime;
         continue;
@@ -491,6 +439,7 @@ export class TrafficManager {
   }
 
   private recycleCar(car: TrafficCar, carIndex: number, player: PlayerCar): void {
+    if (car.driver) return;
     const minDistanceSquared = GAME_CONFIG.traffic.respawnMinRadius ** 2;
     const maxDistanceSquared = GAME_CONFIG.traffic.respawnMaxRadius ** 2;
     for (let attempt = 0; attempt < this.waypoints.length; attempt++) {
@@ -510,6 +459,7 @@ export class TrafficManager {
         car.respawn(waypoint, direction, 0);
       }
       this.updateAccumulatorByCar[carIndex] = 0;
+      this.damageCooldownByCar[carIndex] = 0;
       return;
     }
   }

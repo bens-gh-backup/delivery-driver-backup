@@ -15,6 +15,11 @@ export const WORLD_SURFACES = {
   grateBars: .46,
 } as const;
 
+/** Sidewalk slabs extend into the forgiving logical road bounds. Use their visible edge for art. */
+export function roadSurfaceHalfWidth(): number {
+  return GAME_CONFIG.world.roadWidth / 2 - GAME_CONFIG.world.sidewalkWidth;
+}
+
 /** Street-relative lot bounds: along the road, then inward from the station map marker. */
 export function gasForecourtBounds(): { halfLength: number; front: number; back: number } {
   const { sidewalkWidth, servicePlacement } = GAME_CONFIG.world;

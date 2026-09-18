@@ -13,7 +13,7 @@ import {
 import type { TrafficCar } from "./TrafficCar";
 
 describe("TrafficManager", () => {
-  it("applies one committed ram through the real collision pipeline, including both spin impulses", () => {
+  it("applies one committed ram through the real collision pipeline, with physical spin and no duplicate damage", () => {
     const engine = new NullEngine();
     const scene = new Scene(engine);
     const town = new TownGenerator(scene).generate();
@@ -29,21 +29,21 @@ describe("TrafficManager", () => {
     cop.setPursuitTarget({ x, z, heading: 0, velocityZ: 50 / 0.78 });
     Object.assign(cop, { pursuitPhaseValue: "ram", velocityX: 0, velocityZ: 70 / 0.78 });
     Object.assign(player, { velocityX: 0, velocityZ: 50 / 0.78 });
-    const playerImpulse = vi.spyOn(player, "applyPursuitImpact");
-    const policeImpulse = vi.spyOn(cop, "applyPursuitImpact");
+
     const first = traffic.update(0, player);
     expect(first.damagePercent).toBeCloseTo(0.25);
     expect(cop.damagePercent).toBeCloseTo(first.damagePercent);
-    expect(playerImpulse).toHaveBeenCalledTimes(1);
-    expect(policeImpulse).toHaveBeenCalledTimes(1);
-    expect(cop.pursuitRecoveryRemaining).toBe(4);
+    expect(player.collisionBody.angularVelocity).toBeLessThan(0);
+    expect(cop.collisionBody.angularVelocity).toBeLessThan(0);
+    expect(player.getVelocityZ()).toBeGreaterThan(50 / 0.78);
+    expect(cop.getVelocityZ()).toBeLessThan(70 / 0.78);
+    expect(cop.pursuitRecoveryRemaining).toBe(0);
     expect(first.collisionViolationSeverity).toBe(0);
     cop.mesh.position.set(player.root.position.x + 2, 1, player.root.position.z - offset);
     const second = traffic.update(0, player);
     expect(second.damagePercent).toBe(0);
-    expect(playerImpulse).toHaveBeenCalledTimes(1);
-    expect(policeImpulse).toHaveBeenCalledTimes(1);
-    expect(cop.pursuitRecoveryRemaining).toBe(4);
+
+    expect(cop.pursuitRecoveryRemaining).toBe(0);
     traffic.dispose();
     scene.dispose();
     engine.dispose();

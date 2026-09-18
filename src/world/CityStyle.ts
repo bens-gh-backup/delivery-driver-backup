@@ -6,8 +6,8 @@ import type { StandardMaterial } from "@babylonjs/core/Materials/standardMateria
 import type { Point3 } from "../graphics/FacetedMesh";
 import type { BoxCollider } from "../game/types";
 
-export type CityDistrict = "downtown" | "residential" | "park";
-export interface DistrictBlock { bx: number; bz: number; district: CityDistrict }
+import type { CityDistrict } from "./CityDistricts";
+export { districtForBlock, type CityDistrict, type DistrictBlock } from "./CityDistricts";
 export interface BuildingLot {
   x: number; z: number; width: number; depth: number; height: number;
   district: CityDistrict; landmark: boolean;
@@ -76,13 +76,6 @@ export const CITY_STYLE = {
     direction: [-0.8, -1, 0.45] as const,
   },
 };
-
-export function districtForBlock(bx: number, bz: number, blocksX: number, blocksZ: number): CityDistrict {
-  const cx = Math.floor(blocksX / 2), cz = Math.floor(blocksZ / 2);
-  if (Math.abs(bx - cx) <= 1 && Math.abs(bz - cz) <= 1) return "downtown";
-  if (bx > cx + 1 && bx <= cx + 3 && bz >= cz - 1 && bz <= cz) return "park";
-  return "residential";
-}
 
 export function visualSeed(name: string): number {
   let hash = 2166136261;

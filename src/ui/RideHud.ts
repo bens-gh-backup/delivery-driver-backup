@@ -1,7 +1,8 @@
-import { setText, setVisible } from "./DomUpdates";
+import { setText, setVisible, setStyle } from "./DomUpdates";
 
 export interface RideHudView {
   objective: string;
+  targetHealth?: number;
   trait?: string;
   stars?: number;
   tip?: string;
@@ -22,11 +23,15 @@ export class RideHud {
   private readonly arrival: HTMLElement;
   private readonly packagePayout: HTMLElement;
   private readonly packageRate: HTMLElement;
+  private readonly targetHealth: HTMLElement;
+  private readonly targetFill: HTMLElement;
+  private readonly targetLabel: HTMLElement;
   private lastStars = -1;
   private lastStatus = "";
 
   constructor(root: HTMLElement) {
     root.innerHTML = `<div class="objective" data-ride-field="objective"></div>
+      <div class="chase-health hidden" data-ride-field="targetHealth"><span data-ride-field="targetLabel"></span><div class="chase-health-track"><i data-ride-field="targetFill"></i></div></div>
       <div class="trait-explanation hidden" data-ride-field="trait"></div>
       <div class="hidden" data-ride-field="packagePayout"></div>
       <div class="hidden" data-ride-field="packageRate"></div>
@@ -37,6 +42,7 @@ export class RideHud {
       <div class="hidden" data-ride-field="status"></div>
       <div class="hidden" data-ride-field="arrival"></div>`;
     const field = (name: string) => root.querySelector<HTMLElement>(`[data-ride-field="${name}"]`)!;
+    this.targetHealth=field("targetHealth");this.targetFill=field("targetFill");this.targetLabel=field("targetLabel");
     this.objective=field("objective");this.trait=field("trait");this.score=field("score");
     this.stars=field("stars");this.tip=field("tip");this.status=field("status");
     this.arrival=field("arrival");this.packagePayout=field("packagePayout");this.packageRate=field("packageRate");
@@ -44,6 +50,12 @@ export class RideHud {
 
   update(view: RideHudView): void {
     setText(this.objective,view.objective);
+    setVisible(this.targetHealth, view.targetHealth !== undefined);
+    if (view.targetHealth !== undefined) {
+      const percent = Math.round(view.targetHealth * 100);
+      setText(this.targetLabel, `SUSPECT ${percent}%`);
+      setStyle(this.targetFill, "transform", `scaleX(${percent / 100})`);
+    }
     this.optionalText(this.trait,view.trait);
     this.optionalText(this.packagePayout,view.packagePayout);
     this.optionalText(this.packageRate,view.packageRate);

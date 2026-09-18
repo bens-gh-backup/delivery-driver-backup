@@ -1,8 +1,11 @@
+import type { RaceEncounterCue } from "../racing/RaceEncounterManager";
+import type { ChaseHudState, ChaseResult } from "../chase/ChaseRules";
 import { suggestTraining } from "../training/TrainingSuggestion";
 import type { TrainingContext, TrainingReward } from "../training/Training";
 import { CITY_STYLE } from "../world/CityStyle";
 import { TRAINING_CATEGORIES, TRAINING_JOBS_PER_REGION, type TrainingCategoryId } from "../training/Training";
 import { RideHud } from "./RideHud";
+import { formatIncomeRate } from "./IncomeFormat";
 import { setText, setVisible, setClass, setStyle } from "./DomUpdates";
 import { passengerArchetype } from "../ride/PassengerArchetypes";
 import type { RideOfferBoard } from "../ride/RideOfferBoard";
@@ -11,6 +14,8 @@ import type { PlayerCar } from "../player/PlayerCar";
 import type { FuelManager } from "../player/FuelManager";
 import type { DamageManager } from "../player/DamageManager";
 import type { PoliceManager } from "../police/PoliceManager";
+import type { CurbsideCue } from "../passengers/PassengerManager";
+import type { PackageDeliveryResult } from "../delivery/PackageDeliveryManager";
 import { AmbulanceDriverState, type AmbulanceDriverManager } from "../delivery/AmbulanceDriverManager";
 import { GAME_CONFIG } from "../game/config";
 import { PassengerType, RideState, type PoliceCitation, type RideHistoryEntry, type RideResult, type RideOffer } from "../game/types";
@@ -22,6 +27,7 @@ import { applyPermanentUpgrades, VEHICLE_STAT_KEYS } from "../progression/Upgrad
 import { ELITE_VEHICLE, VEHICLE_CATALOG, normalizedVehicleStat } from "../vehicles/VehicleCatalog";
 import type { VehicleDefinition, VehicleStatKey } from "../vehicles/VehicleTypes";
 import {
+  MISSION_LICENSES,
   getMissionLicense,
   type MissionLicenseDefinition,
   type MissionLicenseId,
@@ -52,8 +58,6 @@ export interface GameUIActions {
   debugResetRaceFinish?: (regionId: string) => void;
   purchaseRacingLicense?: () => string;
   startRace?: (regionId: string) => boolean;
-  retryRace?: () => void;
-  continueRace?: () => void;
   abortRace?: () => void;
   openVehicleShop?: () => boolean;
   canUseVehicleShop?: () => boolean;
@@ -72,11 +76,8 @@ export interface UiRaceSnapshot {
 export interface UiRaceResult {
   regionId: string;
   finishPlace: number;
-  previousBest: number | null;
-  bestFinish: number;
-  multiplier: number;
-  incomeBefore: number;
-  incomeAfter: number;
+  cashEarned: number;
+  passiveIncomeGain: number;
 }
 
 interface MapMarkers {
@@ -147,7 +148,7 @@ export class GameUI {
   private mapCanvas: HTMLDivElement | null = null;
   private phoneMapMarkers: MapMarkers | null = null;
   private phoneTown: Town | null = null;
-  private phoneTab: MissionLicenseId | "training" | "garage" | "upgrades" | "scorecard" = "training";
+  private phoneTab: MissionLicenseId | "training" | "garage" | "upgrades" | "licenses" | "scorecard" = "training";
   private trainingRegionId: string | undefined;
   private trainingCategoryId: TrainingCategoryId | "race" | undefined;
   private trainingSuggestion: TrainingContext | null = null;
@@ -175,13 +176,29 @@ export class GameUI {
   private raceResultData: UiRaceResult | null = null;
   private vehicleShopOpen = false;
   private lastRaceHudHtml = "";
-  private raceCanRetry = true;
+  private raceEncounterCue: RaceEncounterCue | null = null;
+
+  setRaceEncounterCue(cue: RaceEncounterCue | null): void { this.raceEncounterCue = cue; }
   private lastCountdownHtml = "";
   private lastVehicleShopHtml = "";
+  private lastVehicleShopState = "";
   private shopFeedback = "";
   private raceFeedback = "";
   private raceFeedbackSeconds = 0;
   private hasFuel = true;
+  private curbsideCue: CurbsideCue = null;
+  private chaseState: ChaseHudState | null = null;
+  private lastIncomeChase: ChaseResult | null = null;
+
+  setChaseState(state: ChaseHudState | null): void { this.chaseState = state; }
+  private lastIncomeRide: RideResult | null = null;
+  private lastIncomePatient: PackageDeliveryResult | null = null;
+
+  get blocksCurbsidePickup(): boolean {
+    return this.phoneOpen || this.mapOpen || this.vehicleShopOpen || this.refuelHeld || this.repairHeld;
+  }
+
+  setCurbsidePickupCue(cue: CurbsideCue): void { this.curbsideCue = cue; }
 
   setTown(town: Town): void {
     this.phoneTown = town;
@@ -191,6 +208,12 @@ export class GameUI {
     this.trainingRegionId = undefined;
     this.trainingCategoryId = undefined;
     this.lastSeenReward = null;
+    this.lastIncomeRide = null;
+    this.curbsideCue = null;
+    this.raceEncounterCue = null;
+    this.lastIncomePatient = null;
+    this.lastIncomeChase = null;
+    this.chaseState = null;
     this.lastWorkedRegionId = undefined;
     this.suggestionKey = "";
     this.highlightedRegionId = undefined;
@@ -208,12 +231,12 @@ export class GameUI {
     const active = snapshot?.state === "COUNTDOWN" || snapshot?.state === "RACING";
     this.raceSnapshot = snapshot;
     if (result && result !== this.raceResultData && GAME_CONFIG.presentation.progressionFeedback
-      && (result.previousBest === null || result.bestFinish < result.previousBest)) {
+      && result.passiveIncomeGain > 0) {
       this.highlightedRegionId = result.regionId;
       this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
     }
     this.raceResultData = result;
-    this.pauseRaceAbort.classList.toggle("hidden", !active && snapshot?.state !== "FINISHED");
+    setClass(this.pauseRaceAbort, "hidden", !active && snapshot?.state !== "FINISHED");
     if (active && previousState !== snapshot?.state) {
       this.closePhone();
       this.toggleMapOff();
@@ -252,6 +275,7 @@ export class GameUI {
   }
 
   openVehicleShopOverlay(): void {
+    this.lastVehicleShopState = "";
     this.vehicleShopOpen = true;
     this.vehicleShopOverlay.classList.remove("hidden");
   }
@@ -260,6 +284,7 @@ export class GameUI {
     this.vehicleShopOpen = false;
     this.vehicleShopOverlay.classList.add("hidden");
     this.lastVehicleShopHtml = "";
+    this.lastVehicleShopState = "";
   }
 
   closeShop(): void {
@@ -281,9 +306,9 @@ export class GameUI {
     this.startScreen.className = "screen";
     this.startScreen.innerHTML = `
       <div class="panel">
-        <h1>RIDE-SHARE DRIVER</h1>
-        <p>Complete jobs. Train your AI replacement. Earn AI income.</p>
-        <p>WASD to drive. P opens the app. M opens the map. R resets your car.</p>
+        <h1>AI TAXI TRAINING</h1>
+        <p>Pick up passengers. Train your AI replacement.</p>
+        <p>WASD to drive. P opens your phone. M opens the map. R resets your car.</p>
         <button type="button">START</button>
       </div>
     `;
@@ -384,7 +409,12 @@ export class GameUI {
       const delta = movement[event.key];
       if (!delta) return;
       event.preventDefault();
-      const neighbor = this.trainingMapRegions?.find(candidate => candidate.bx === region.bx + delta[0] && candidate.bz === region.bz + delta[1]);
+      // Skip park blocks while preserving spatial keyboard navigation.
+      const neighbor = this.trainingMapRegions?.filter(candidate =>
+        delta[0] ? candidate.bz === region.bz && (candidate.bx - region.bx) * delta[0] > 0
+          : candidate.bx === region.bx && (candidate.bz - region.bz) * delta[1] > 0)
+        .sort((a, b) => Math.abs(a.bx - region.bx) + Math.abs(a.bz - region.bz)
+          - Math.abs(b.bx - region.bx) - Math.abs(b.bz - region.bz))[0];
       if (!neighbor) return;
       const target = this.phone.querySelector<HTMLButtonElement>(`[data-training-region="${neighbor.id}"]`);
       target?.focus({ preventScroll: true });
@@ -563,8 +593,6 @@ export class GameUI {
     this.raceResultOverlay.className = "race-result-overlay hidden";
     this.raceResultOverlay.addEventListener("click", (event) => {
       const target = event.target as HTMLElement;
-      if (target.closest("[data-race-retry]")) this.actions.retryRace?.();
-      if (target.closest("[data-race-continue]")) this.actions.continueRace?.();
     });
     this.vehicleShopOverlay = document.createElement("div");
     this.vehicleShopOverlay.className = "vehicle-shop-overlay hidden";
@@ -693,7 +721,7 @@ export class GameUI {
     this.phone.classList.toggle("hidden", !this.phoneOpen);
     if (this.phoneOpen) {
       this.phone.querySelector(".phone-screen")?.scrollTo(0, 0);
-      this.phoneTab = "training";
+      this.phoneTab = GAME_CONFIG.gameplay.regionalTrainingEnabled ? "training" : (this.curbsideCue === "license" || this.chaseState?.licenseRequired || this.raceEncounterCue?.kind === "license") ? "licenses" : "upgrades";
       this.trainingRegionId = undefined;
       this.trainingCategoryId = undefined;
       this.suggestionKey = "";
@@ -702,6 +730,16 @@ export class GameUI {
       this.lastPhoneHtml = "";
       this.phoneRefreshElapsed = GAME_CONFIG.ride.offerDistanceRefreshSeconds;
     }
+  }
+
+  openLicenses(): void {
+    if (this.raceSnapshot?.state === "COUNTDOWN" || this.raceSnapshot?.state === "RACING" || this.vehicleShopOpen) return;
+    this.toggleMapOff();
+    if (!this.phoneOpen) this.togglePhone();
+    this.phoneTab = "licenses";
+    this.phoneFeedback = ""; this.phoneFeedbackSeconds = 0;
+    this.lastPhoneHtml = "";
+    this.phoneRefreshElapsed = GAME_CONFIG.ride.offerDistanceRefreshSeconds;
   }
 
   closePhone(): void {
@@ -746,7 +784,6 @@ export class GameUI {
     const raceActive = this.raceSnapshot?.state === "COUNTDOWN" || this.raceSnapshot?.state === "RACING";
     const raceSession = raceActive || this.raceSnapshot?.state === "FINISHED";
     this.hasFuel = fuel.hasFuel;
-    this.raceCanRetry = this.hasFuel;
     this.ambulancePursuitBlocked = police.isPursuitActive;
     const speedWarning = !raceSession && ride.isSpeedWarning(speedMph);
     const speedLabel = raceSession ? `${Math.round(speedMph)} MPH` : ride.getSpeedWarningLabel(speedMph);
@@ -754,7 +791,7 @@ export class GameUI {
     const damagePercent = Math.round(damage.damagePercent * 100);
     const walletMoney = ride.totalMoney;
     setText(this.moneyValue, `$${ride.totalMoney.toFixed(2)}`);
-    setText(this.aiIncomeValue, `AI INCOME: $${profile.passiveIncomePerSecond.toFixed(2)}/sec`);
+    setText(this.aiIncomeValue, `AI INCOME: $${formatIncomeRate(profile.passiveIncomePerSecond)}/sec`);
     setText(this.ridesValue, `RIDES: ${ride.completedRides}`);
     setText(this.speedometer, speedLabel);
     setClass(this.speedometer, "warning", speedWarning);
@@ -762,11 +799,12 @@ export class GameUI {
     setText(this.fuelLabel, `GAS ${fuelPercent}%`);
     setStyle(this.fuelFill, "width", `${fuelPercent}%`);
     setClass(this.damageMeter, "damaged", damage.damagePercent > 0);
+    setClass(this.damageMeter, "bullet-hit", this.chaseState?.hit ?? false);
     setText(this.damageLabel, `DAMAGE ${damagePercent}/100`);
     setStyle(this.damageFill, "width", `${damagePercent}%`);
     const policePercent = Math.round(police.warning.hudProgress * 100);
     const escapePercent = Math.round(police.warning.escapeProgress * 100);
-    setClass(this.policeMeter, "hidden", raceSession || (police.warning.hudMode === "idle" && policePercent <= 0));
+    setClass(this.policeMeter, "hidden", raceSession || !!this.chaseState?.active || (police.warning.hudMode === "idle" && policePercent <= 0));
     if (this.lastPoliceMode !== police.warning.hudMode) {
       if(this.lastPoliceMode !== "idle") this.policeMeter.classList.remove(this.lastPoliceMode);
       if(police.warning.hudMode !== "idle") this.policeMeter.classList.add(police.warning.hudMode);
@@ -832,8 +870,8 @@ export class GameUI {
       const competitors = this.raceSnapshot?.state === "RACING"
         ? `RACE ${this.regionNumber(this.raceSnapshot.regionId)} · POS ${this.raceSnapshot.position}/${GAME_CONFIG.racing.aiCount + 1} · CP ${this.raceSnapshot.checkpoint}/${this.raceSnapshot.checkpointCount}`
         : "RACE IDLE";
-      this.debugRaceTelemetry.textContent = competitors;
-      this.debugRaceTelemetry.classList.toggle("hidden", !raceActive && this.raceSnapshot?.state !== "FINISHED");
+      setText(this.debugRaceTelemetry, competitors);
+      setClass(this.debugRaceTelemetry, "hidden", !raceActive && this.raceSnapshot?.state !== "FINISHED");
     }
   }
 
@@ -880,6 +918,21 @@ export class GameUI {
     profile: PlayerProfile,
   ): void {
     this.phoneLiveValues = [];
+    if (!GAME_CONFIG.gameplay.regionalTrainingEnabled) {
+      this.setHtml(this.phone, "lastPhoneHtml", `
+        <div class="phone-panel upgrades-only">
+          <div class="phone-topbar"><div class="phone-tabs" role="tablist">
+            ${this.phoneTabButton("upgrades", "UPGRADES")}${this.phoneTabButton("licenses", "LICENSES")}
+          </div><button type="button" class="phone-close" data-phone-close aria-label="Close phone">&times;</button></div>
+          <div class="phone-screen">
+            <div class="upgrade-finances"><strong>${this.phoneLive(this.money(profile.money))}</strong><span>AI INCOME $${formatIncomeRate(profile.passiveIncomePerSecond)}/sec</span></div>
+            ${this.phoneFeedback ? `<div class="phone-feedback">${this.phoneFeedback}</div>` : ""}
+            ${this.phoneTab === "licenses" ? this.renderLicenses(profile) : this.renderUpgrades(profile)}
+          </div><div class="phone-home-indicator" aria-hidden="true"></div>
+        </div>`);
+      for (let i = 0; i < this.phoneLiveNodes.length; i++) setText(this.phoneLiveNodes[i], this.phoneLiveValues[i] ?? "");
+      return;
+    }
     let content: string;
     const missionCategory = getMissionLicense(this.phoneTab);
     if (this.phoneTab === "training") {
@@ -1270,9 +1323,24 @@ export class GameUI {
     `;
   }
 
+  private renderLicenses(profile: PlayerProfile): string {
+    return `<div class="license-list">${MISSION_LICENSES.filter(license => license.id === "taxi"
+      || (license.id === "ambulance_driver" && GAME_CONFIG.gameplay.ambulanceJobsEnabled)
+      || (license.id === "police_chase" && GAME_CONFIG.gameplay.policeChasesEnabled)).map(license => {
+      const owned = profile.ownsMissionLicense(license.id), affordable = profile.money >= license.unlockCost;
+      return `<div class="license-card"><div class="license-card-heading"><strong>${license.name}</strong>
+        ${license.id !== "taxi" ? `<span>+$${formatIncomeRate(license.id === "police_chase" ? GAME_CONFIG.policeChase.passiveIncomePerWin : GAME_CONFIG.ambulanceDriver.passiveIncomePerDelivery)}/sec</span>` : ""}</div>
+        <p>${license.description}</p><button type="button" data-purchase-license="${license.id}" ${owned || !affordable ? "disabled" : ""}>
+          ${owned ? "UNLOCKED" : `Unlock License (${this.wholeMoney(license.unlockCost)})`}</button></div>`;
+    }).join("")}${GAME_CONFIG.gameplay.racesEnabled ? `<div class="license-card"><div class="license-card-heading"><strong>Racing</strong><span>Up to +$${formatIncomeRate(Math.max(0, ...GAME_CONFIG.racing.finishRewards.map(reward => reward.incomePerSecond)))}/sec</span></div>
+      <p>Join street races. Better finishes earn more.</p>
+      <button type="button" data-purchase-racing-license ${profile.ownsRacingLicense || profile.money < GAME_CONFIG.racing.licenseCost ? "disabled" : ""}>
+        ${profile.ownsRacingLicense ? "UNLOCKED" : `Unlock License (${this.wholeMoney(GAME_CONFIG.racing.licenseCost)})`}</button></div>` : ""}</div>`;
+  }
+
   private renderUpgrades(profile: PlayerProfile): string {
     return `
-      <div class="phone-title">PERMANENT UPGRADES</div>
+      ${GAME_CONFIG.gameplay.regionalTrainingEnabled ? '<div class="phone-title">PERMANENT UPGRADES</div>' : ""}
       ${profile.freeUpgradeCredits > 0 ? `<div class="trait-status">FREE UPGRADE CREDITS: ${profile.freeUpgradeCredits}</div>` : ""}
       <div class="upgrade-list">
         ${VEHICLE_STAT_KEYS.map((stat) => this.upgradeCard(stat, profile)).join("")}
@@ -1514,6 +1582,13 @@ export class GameUI {
   private mapContents(town: Town, missions = "", prefix = ""): string {
     const roadWidth = projectMapWidth(GAME_CONFIG.world.roadWidth, town);
     const roadHeight = projectMapHeight(GAME_CONFIG.world.roadWidth, town);
+    const parks = town.districts.filter(block => block.district === "park").map(({ bx, bz }) => {
+      const x0 = town.roadPositionsX[bx], x1 = town.roadPositionsX[bx + 1];
+      const z0 = town.roadPositionsZ[bz], z1 = town.roadPositionsZ[bz + 1];
+      const point = projectMapPoint((x0 + x1) / 2, (z0 + z1) / 2, town);
+      return `<div class="map-park" data-map-park="block-${bx}-${bz}" role="img" aria-label="Park"
+        style="left:${point.x}%;top:${point.y}%;width:${projectMapWidth(x1 - x0 - GAME_CONFIG.world.roadWidth, town)}%;height:${projectMapHeight(z1 - z0 - GAME_CONFIG.world.roadWidth, town)}%"></div>`;
+    }).join("");
     const roads = town.roads.map((road) => {
       const point = road.axis === "northSouth"
         ? projectMapPoint(road.center, 0, town)
@@ -1540,7 +1615,7 @@ export class GameUI {
     const objectiveMarkerHeight = projectMapHeight(GAME_CONFIG.world.roadWidth * 0.5, town);
 
     return `<div class="map-canvas" style="--map-road-color:${CITY_STYLE.palette.road};aspect-ratio:${town.maxX - town.minX}/${town.maxZ - town.minZ};--objective-marker-width:${objectiveMarkerWidth}%;--objective-marker-height:${objectiveMarkerHeight}%;--mission-marker-width:${projectMapWidth(130, town)}%;--mission-marker-height:${projectMapHeight(130, town)}%;--service-marker-width:${projectMapWidth(140, town)}%;--service-marker-height:${projectMapHeight(140, town)}%">
-          ${roads}${gasMarkers}${repairMarkers}${dealerMarkers}${missions}
+          ${parks}${roads}${gasMarkers}${repairMarkers}${dealerMarkers}${missions}
           <div class="map-marker pickup hidden" data-map="${prefix}pickup" role="img" aria-label="Pickup" title="Pickup"></div>
           <div class="map-marker dropoff hidden" data-map="${prefix}dropoff" role="img" aria-label="Dropoff" title="Dropoff"></div>
           <div class="map-training-reward hidden" data-map="${prefix}reward" aria-hidden="true"></div>
@@ -1601,7 +1676,7 @@ export class GameUI {
     if (raceActive && this.raceSnapshot) {
       const snapshot = this.raceSnapshot;
       const stateLabel = snapshot.state === "COUNTDOWN" ? "GRID" : "RACING";
-      const html = `<div class="race-hud-line"><strong>REGION ${this.regionNumber(snapshot.regionId)}</strong><span>${stateLabel}</span></div>
+      const html = `<div class="race-hud-line"><strong>STREET RACE</strong><span>${stateLabel}</span></div>
         <div class="race-hud-line"><strong>POSITION ${Math.max(1, snapshot.position)} / ${GAME_CONFIG.racing.aiCount + 1}</strong><span>CHECKPOINT ${Math.min(snapshot.checkpoint + 1, snapshot.checkpointCount)} / ${snapshot.checkpointCount}</span></div>`;
       if (html !== this.lastRaceHudHtml) {
         this.lastRaceHudHtml = html;
@@ -1609,17 +1684,36 @@ export class GameUI {
       }
       return;
     }
+    if (this.chaseState?.active) {
+      this.rideHudView.update({ objective: `POLICE · ${Math.round(this.chaseState.distance)}m`,
+        targetHealth: this.chaseState.suspectHealth,
+        arrival: this.chaseState.escapeRemaining !== null ? `LOSING SUSPECT · ${Math.ceil(this.chaseState.escapeRemaining)}s` : undefined });
+      return;
+    }
     if (ambulanceDriver.activeOffer) {
-      const objective = ambulanceDriver.state === AmbulanceDriverState.DrivingToPickup ? "COLLECT PATIENT" : "RETURN TO CLINIC";
+      const objective = ambulanceDriver.state === AmbulanceDriverState.DrivingToPickup ? "COLLECT PATIENT" : "DRIVE TO CLINIC";
       this.rideHudView.update({objective:`AMBULANCE · ${objective}`,
         packagePayout:`PAYOUT: ${this.money(ambulanceDriver.currentPayout)}`,
-        packageRate:`RATE: ${this.money(ambulanceDriver.currentRatePerMeter)} / M`,
+
         arrival:ambulanceDriver.isWaitingForArrivalSpeed()
           ? `SLOW BELOW ${GAME_CONFIG.ride.maximumArrivalSpeedMph} MPH` : undefined});
       return;
     }
+    if (!ride.activeRide && this.raceEncounterCue) {
+      const cue = this.raceEncounterCue, seconds = Math.ceil(cue.seconds);
+      const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2,"0")}`;
+      const label = cue.kind === "license" ? "E · RACING LICENSE" : cue.kind === "fuel" ? "REFUEL TO RACE" : "E · ENTER RACE";
+      this.rideHudView.update({objective: `${label} · ${time}`});
+      return;
+    }
     if (!ride.activeRide) {
-      this.rideHudView.update({objective:"PRESS P FOR RIDES"});
+      this.rideHudView.update({objective: GAME_CONFIG.gameplay.curbsidePassengersEnabled
+        ? this.chaseState?.licenseRequired ? "POLICE LICENSE REQUIRED · P"
+          : this.curbsideCue === "license" ? "AMBULANCE LICENSE REQUIRED · P"
+          : this.curbsideCue === "pursuit" ? "LOSE POLICE FIRST"
+          : this.curbsideCue === "patient" ? "STOP TO COLLECT PATIENT"
+          : this.curbsideCue === "taxi" ? "STOP TO PICK UP" : "LOOK FOR SOMEONE HAILING A TAXI"
+        : "PRESS P FOR RIDES"});
       return;
     }
     const onboard = ride.state === RideState.PassengerOnboard;
@@ -1687,6 +1781,21 @@ export class GameUI {
 
   private updateTrainingFeedback(ride: RideManager, ambulance: AmbulanceDriverManager, deltaTime: number): void {
     this.highlightSeconds = Math.max(0, this.highlightSeconds - deltaTime);
+    if (ride.lastResult && ride.lastResult !== this.lastIncomeRide) {
+      this.lastIncomeRide = ride.lastResult;
+      if ((ride.lastResult.passiveIncomeGain ?? 0) > 0 && GAME_CONFIG.presentation.progressionFeedback)
+        this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
+    }
+    if (ambulance.lastResult && ambulance.lastResult !== this.lastIncomePatient) {
+      this.lastIncomePatient = ambulance.lastResult;
+      if ((ambulance.lastResult.passiveIncomeGain ?? 0) > 0 && GAME_CONFIG.presentation.progressionFeedback)
+        this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
+    }
+    if (this.chaseState?.result && this.chaseState.result !== this.lastIncomeChase) {
+      this.lastIncomeChase = this.chaseState.result;
+      if (this.chaseState.result.passiveIncomeGain > 0 && GAME_CONFIG.presentation.progressionFeedback)
+        this.highlightSeconds = GAME_CONFIG.presentation.regionHighlightSeconds;
+    }
     const reward = ambulance.resultTimeRemaining > 0 ? ambulance.lastTrainingReward
       : ride.resultTimeRemaining > 0 ? ride.lastTrainingReward : null;
     if (reward && reward !== this.lastSeenReward) {
@@ -1724,6 +1833,15 @@ export class GameUI {
       this.lastRideResultHtml = "";
       return;
     }
+    if (this.chaseState?.result && this.chaseState.resultSeconds > 0) {
+      const result = this.chaseState.result;
+      setClass(this.rideResult, "passenger-result", false);
+      setVisible(this.rideResult, true);
+      const labels = {won: "SUSPECT DISABLED", destroyed: "POLICE CAR DISABLED", escaped: "SUSPECT ESCAPED", reset: "PURSUIT ENDED"};
+      this.setHtml(this.rideResult, "lastRideResultHtml", `<div class="ride-result-title">${labels[result.outcome]}</div>
+        ${result.passiveIncomeGain > 0 ? `<div class="training-reward-income"><strong>+$${formatIncomeRate(result.passiveIncomeGain)}/sec AI income</strong></div>` : ""}`);
+      return;
+    }
     if (ambulanceDriver.lastResult && ambulanceDriver.resultTimeRemaining > 0) {
       const result = ambulanceDriver.lastResult;
       setClass(this.rideResult,"passenger-result",false);
@@ -1731,7 +1849,9 @@ export class GameUI {
       this.setHtml(this.rideResult, "lastRideResultHtml", `
         <div class="ride-result-title">PATIENT DELIVERED</div>
         <div class="patient-payout">${this.money(result.payout)}</div>
-        ${this.trainingRewardHtml(ambulanceDriver.lastTrainingReward)}
+        ${result.curbside && GAME_CONFIG.presentation.progressionFeedback
+          ? `<div class="training-reward-income"><strong>+$${formatIncomeRate(result.passiveIncomeGain ?? 0)}/sec AI income</strong></div>`
+          : this.trainingRewardHtml(ambulanceDriver.lastTrainingReward)}
       `);
       return;
     }
@@ -1750,44 +1870,61 @@ export class GameUI {
         <span>BASE FARE</span><strong>${this.money(result.baseFare)}</strong>
         <span>TIP</span><strong>${this.money(result.tip)}</strong>
       </div>
-      ${this.trainingRewardHtml(ride.lastTrainingReward)}
+      ${ride.lastResult.curbside
+        ? (ride.lastResult.passiveIncomeGain ?? 0) > 0 && GAME_CONFIG.presentation.progressionFeedback
+          ? `<div class="training-reward-income" role="status"><strong>AI income +$${formatIncomeRate(ride.lastResult.passiveIncomeGain!)}/sec</strong></div>` : ""
+        : this.trainingRewardHtml(ride.lastTrainingReward)}
     `);
   }
 
   private renderRaceOverlays(): void {
     const snapshot = this.raceSnapshot;
     if (snapshot?.state === "COUNTDOWN") {
-      this.raceCountdown.classList.remove("hidden");
-      const html = `<div class="race-countdown-label">REGION ${this.regionNumber(snapshot.regionId)} RACE</div><strong>${snapshot.countdown > 0 ? Math.max(1, Math.ceil(snapshot.countdown)) : "GO!"}</strong>`;
+      setClass(this.raceCountdown, "hidden", false);
+      const html = `<div class="race-countdown-label">STREET RACE</div><strong>${snapshot.countdown > 0 ? Math.max(1, Math.ceil(snapshot.countdown)) : "GO!"}</strong>`;
       if (html !== this.lastCountdownHtml) {
         this.lastCountdownHtml = html;
         this.raceCountdown.innerHTML = html;
       }
     } else {
-      this.raceCountdown.classList.add("hidden");
+      setClass(this.raceCountdown, "hidden", true);
     }
     const result = this.raceResultData;
     if (snapshot?.state !== "FINISHED" || !result) {
-      if (snapshot?.state !== "FINISHED") this.raceResultOverlay.classList.add("hidden");
+      if (snapshot?.state !== "FINISHED") setClass(this.raceResultOverlay, "hidden", true);
       return;
     }
-    const improved = result.previousBest === null || result.bestFinish < result.previousBest;
-    const previous = result.previousBest === null ? "UNRANKED" : `${this.ordinal(result.previousBest)} PLACE`;
-    const html = `<div class="race-result-panel ${improved && GAME_CONFIG.presentation.progressionFeedback ? "race-improved" : ""}">
-      <div class="race-result-eyebrow">RACE COMPLETE</div><h2>REGION ${this.regionNumber(result.regionId)}</h2>
-      <div class="race-finish-label">FINISH</div><div class="race-finish">${this.ordinal(result.finishPlace)} / ${GAME_CONFIG.racing.aiCount + 1}</div>
-      <div class="race-result-grid"><div><span>PREVIOUS BEST</span><strong>${previous}</strong></div><div><span>${improved ? "NEW REGIONAL MULTIPLIER" : "BEST RESULT REMAINS"}</span><strong>×${result.multiplier.toFixed(2)}</strong></div><div class="race-income-result"><span>REGIONAL AI INCOME</span><strong>$${result.incomeBefore.toFixed(2)} → $${result.incomeAfter.toFixed(2)}/sec</strong></div></div>
-      <div class="race-result-actions"><button type="button" data-race-retry ${this.raceCanRetry ? "" : "disabled"}>${this.raceCanRetry ? "RETRY" : "REFUEL TO RETRY"}</button><button type="button" data-race-continue>CONTINUE</button></div>
+    const html = `<div class="street-race-result" role="status">
+      <div class="race-result-eyebrow">RACE COMPLETE</div>
+      <div class="street-race-place">${this.ordinal(result.finishPlace)} <span>/ ${GAME_CONFIG.racing.aiCount + 1}</span></div>
+      <div class="street-race-cash">${this.wholeMoney(result.cashEarned)}</div>
+      <div class="training-reward-income"><strong>+$${formatIncomeRate(result.passiveIncomeGain)}/sec AI income</strong></div>
     </div>`;
     if (html !== this.lastRaceResultHtml) {
       this.lastRaceResultHtml = html;
       this.raceResultOverlay.innerHTML = html;
     }
-    this.raceResultOverlay.classList.remove("hidden");
+    setClass(this.raceResultOverlay, "hidden", false);
   }
 
   private renderVehicleShop(profile: PlayerProfile, player: PlayerCar): void {
     const stopped = player.getSpeedMph() <= GAME_CONFIG.progression.equipMaxSpeedMph;
+    // Compare displayed state before formatting all cards. Fractional income only matters
+    // when it crosses a quoted price; never use the changing bank balance as the key.
+    const state = JSON.stringify([
+      stopped, this.shopFeedback, profile.equippedVehicleId,
+      profile.jailFreeCards, profile.vehicleCoupons, profile.freeUpgradeCredits,
+      GAME_CONFIG.ride.archetypes.vehicleCouponValue, GAME_CONFIG.ride.mphPerWorldUnitPerSecond,
+      VEHICLE_STAT_KEYS.map(stat => profile.upgrades[stat]),
+      VEHICLE_CATALOG.map(vehicle => {
+        const owned = profile.ownsVehicle(vehicle.id);
+        const quote = profile.getVehiclePurchaseQuote(vehicle.id)!;
+        return [vehicle.id, owned, quote.price, quote.discount, quote.couponsUsed,
+          !owned && profile.money >= quote.price];
+      }),
+    ]);
+    if (state === this.lastVehicleShopState) return;
+    this.lastVehicleShopState = state;
     const html = `${this.shopFeedback ? `<div class="phone-feedback shop-feedback">${this.shopFeedback}</div>` : ""}<div class="vehicle-shop-subtitle">UPGRADES APPLY TO EVERY CAR</div>${this.rewardInventory(profile)}<div class="garage-list">${VEHICLE_CATALOG.map(vehicle => this.vehicleCard(vehicle, profile, stopped)).join("")}</div>`;
     if (html === this.lastVehicleShopHtml) return;
     this.lastVehicleShopHtml = html;
@@ -1862,7 +1999,7 @@ export class GameUI {
         <button type="button" data-debug-action="unlock">UNLOCK CARS</button>
         <button type="button" data-debug-action="reset-upgrades">RESET UPGRADES</button>
       </div>
-      <div class="progression-debug-row">
+      ${GAME_CONFIG.gameplay.racesEnabled ? `<div class="progression-debug-row">
         <button type="button" data-debug-action="unlock-racing">UNLOCK RACING</button>
         <select data-debug="race-region">${Array.from({ length: 36 }, (_, index) => {
           const bx = index % 6, bz = Math.floor(index / 6);
@@ -1873,7 +2010,7 @@ export class GameUI {
         <button type="button" data-debug-action="start-race">START RACE</button>
         <button type="button" data-debug-action="reset-race">RESET BEST</button>
       </div>
-      <div class="progression-debug-race hidden" data-debug-race-telemetry></div>
+      <div class="progression-debug-race hidden" data-debug-race-telemetry></div>` : ""}
       <div class="progression-debug-row">
         <button type="button" data-debug-action="police-vision">POLICE VISION: ON</button>
       </div>

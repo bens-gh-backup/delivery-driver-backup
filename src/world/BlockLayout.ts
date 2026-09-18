@@ -1,4 +1,5 @@
 import { GAME_CONFIG } from "../game/config";
+import { STARTER_VEHICLE } from "../vehicles/VehicleCatalog";
 import type { BoxCollider } from "../game/types";
 import { seededRandom } from "../utils/math";
 import { CITY_STYLE, visualSeed, type BuildingLot, type CityDistrict } from "./CityStyle";
@@ -97,8 +98,8 @@ export function planBlock(bx: number, bz: number, x: number, z: number,
   }
   if(commercial) {
     const insets=new Map(buildings.map(b=>[b,[0,0,0,0]]));
-    const minGap=rules.downtownGapMinMeters/GAME_CONFIG.ride.metersPerWorldUnit;
-    const maxGap=rules.downtownGapMaxMeters/GAME_CONFIG.ride.metersPerWorldUnit;
+    const minGap=rules.downtownGapMinTaxiWidths*STARTER_VEHICLE.appearance.bodyWidth;
+    const maxGap=rules.downtownGapMaxTaxiWidths*STARTER_VEHICLE.appearance.bodyWidth;
     for(const b of buildings) {
       b.frontage!.sideClearances=[Infinity,Infinity,Infinity,Infinity];
       b.frontage!.neighborHeights=[0,0,0,0];

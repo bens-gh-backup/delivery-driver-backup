@@ -1,6 +1,7 @@
 import type { DeliveryPoint } from "../game/types";
 import type { Town } from "../world/Town";
 import { GAME_CONFIG } from "../game/config";
+import { isDevelopedBlock } from "../world/CityDistricts";
 
 export const TRAINING_CATEGORIES = [
   {
@@ -41,8 +42,9 @@ export function createTrainingRegions(town: Pick<Town, "roadPositionsX" | "roadP
   const eligible = new Set(town.roads.filter(road => road.type === "city" && road.allowsMissionStops).map(road => road.id));
   const xs = town.roadPositionsX, zs = town.roadPositionsZ;
   for (let bz = 0; bz < zs.length - 1; bz++) for (let bx = 0; bx < xs.length - 1; bx++) {
+    if (!isDevelopedBlock(bx, bz, xs.length - 1, zs.length - 1)) continue;
     const minX = xs[bx], maxX = xs[bx + 1], minZ = zs[bz], maxZ = zs[bz + 1];
-    regions.push({ id: `block-${bx}-${bz}`, label: `Region ${regions.length + 1}`, bx, bz,
+    regions.push({ id: `block-${bx}-${bz}`, label: `Region ${bz * (xs.length - 1) + bx + 1}`, bx, bz,
       minX, maxX, minZ, maxZ, x: (minX + maxX) / 2, z: (minZ + maxZ) / 2,
       pickups: town.deliveryPoints.filter(point => eligible.has(point.roadId)
         && point.position.x >= minX && point.position.x < maxX

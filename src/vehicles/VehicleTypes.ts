@@ -21,7 +21,7 @@ export interface VehicleAppearance {
   cabinLength: number;
   cabinWidth: number;
   cabinHeight: number;
-  role?: "ambulance";
+  role?: "ambulance" | "police";
 }
 
 export interface VehicleDefinition {
@@ -34,6 +34,10 @@ export interface VehicleDefinition {
 
 export interface PlayerProgression {
   version: number;
+  taxiPassiveIncomePerSecond: number;
+  ambulancePassiveIncomePerSecond: number;
+  policeChasePassiveIncomePerSecond: number;
+  racingPassiveIncomePerSecond: number;
   trainingProgress: TrainingProgress;
   jailFreeCards: number;
   vehicleCoupons: number;

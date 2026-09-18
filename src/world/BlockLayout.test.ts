@@ -2,12 +2,14 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GAME_CONFIG } from "../game/config";
+import { STARTER_VEHICLE } from "../vehicles/VehicleCatalog";
 import type { BoxCollider } from "../game/types";
 import { planBlock, subtractAreas, footprint } from "./BlockLayout";
 import { TownGenerator, type Town } from "./Town";
 import { WORLD_SURFACES } from "./SurfaceLayout";
 import { Ray } from "@babylonjs/core/Culling/ray";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { worldTriangleBudgetForScene } from "../graphics/GraphicsMode";
 
 const overlaps=(a:BoxCollider,b:BoxCollider)=>Math.abs(a.x-b.x)<a.halfX+b.halfX-.001
   && Math.abs(a.z-b.z)<a.halfZ+b.halfZ-.001;
@@ -53,12 +55,12 @@ describe("street frontage layout",()=>{
     }
   });
 
-  it("keeps all service areas open and world geometry within the agreed five-percent ceiling",()=>{
+  it("keeps all service areas open and world geometry within the combined art ceiling",()=>{
     expect(town.buildings.length).toBeLessThanOrEqual(912);
-    expect(town.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThanOrEqual(Math.floor(206188*1.05));
-    // The shared fence material adds at most one batch in each of nine occupied chunks.
-    expect(town.meshes.filter(m=>m.material?.name==="fence-mat").length).toBeLessThanOrEqual(9);
-    expect(town.meshes.length).toBeLessThanOrEqual(121);
+    expect(town.meshes.reduce((sum,m)=>sum+m.getTotalIndices()/3,0)).toBeLessThanOrEqual(worldTriangleBudgetForScene(scene));
+    // At most one fence batch per occupied block-sized rendering cell.
+    expect(town.meshes.filter(m=>m.material?.name==="fence-mat").length).toBeLessThanOrEqual(36);
+    expect(town.meshes.filter(m => !m.isAnInstance).length).toBeLessThanOrEqual(450);
     expect(town.buildings.filter(b=>b.landmark)).toHaveLength(2);
     for(const area of town.legalDrivingAreas){
       expect(town.buildings.some(b=>overlaps(area,footprint(b)))).toBe(false);
@@ -71,8 +73,12 @@ describe("street frontage layout",()=>{
     expect(hits[0].getNormal(true)!.y).toBeGreaterThan(.99);
   });
 
-  it("gives adjacent downtown buildings seeded gaps of half to three meters",()=>{
+  it("gives adjacent downtown buildings seeded gaps of 75–100% of the taxi width, too narrow to drive through",()=>{
     const gaps:number[]=[];
+    const taxiWidth = STARTER_VEHICLE.appearance.bodyWidth;
+    const minGap = taxiWidth * GAME_CONFIG.world.buildings.downtownGapMinTaxiWidths;
+    const maxGap = taxiWidth * GAME_CONFIG.world.buildings.downtownGapMaxTaxiWidths;
+    const collisionDiameter = 2 * GAME_CONFIG.player.radius * taxiWidth / GAME_CONFIG.player.width;
     for(const a of town.buildings.filter(b=>b.district==="downtown")) {
       expect(a.frontage!.coveredHeights.every(h=>h===0)).toBe(true);
       for(let local=0;local<4;local++) {
@@ -84,8 +90,9 @@ describe("street frontage layout",()=>{
           .filter(g=>g>0);
         const actual=Math.min(...neighbors);
         expect(actual).toBeCloseTo(expected);
-        const meters=actual*GAME_CONFIG.ride.metersPerWorldUnit;gaps.push(meters);
-        expect(meters).toBeGreaterThanOrEqual(.5);expect(meters).toBeLessThanOrEqual(3);
+        gaps.push(actual);
+        expect(actual).toBeGreaterThanOrEqual(minGap-1e-8);expect(actual).toBeLessThanOrEqual(maxGap+1e-8);
+        expect(actual).toBeLessThan(collisionDiameter);
       }
     }
     expect(new Set(gaps.map(g=>g.toFixed(2))).size).toBeGreaterThan(30);

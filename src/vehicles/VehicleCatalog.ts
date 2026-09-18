@@ -80,6 +80,14 @@ export const AMBULANCE_VEHICLE: VehicleDefinition = {
   },
 };
 
+export const POLICE_VEHICLE: VehicleDefinition = {
+  id: "mission-police", name: "Pursuit Cruiser", price: 0,
+  stats: { ...GAME_CONFIG.policeChase.policeHandling,
+    topSpeed: GAME_CONFIG.policeChase.policeTopSpeedMph / GAME_CONFIG.ride.mphPerWorldUnitPerSecond },
+  appearance: { bodyColor: "#edf0ef", bodyLength: 10.8, bodyWidth: 5.8, bodyHeight: 1.7,
+    cabinLength: 4.5, cabinWidth: 4.7, cabinHeight: 1.5, role: "police" },
+};
+
 const VEHICLES_BY_ID = new Map(VEHICLE_CATALOG.map((vehicle) => [vehicle.id, vehicle]));
 
 export function getVehicleDefinition(id: string): VehicleDefinition | null {

@@ -6,9 +6,15 @@ import { GAME_CONFIG } from "../game/config";
 import type { TrafficVehicleRole, TrafficWaypoint } from "../game/types";
 import { clamp, lerp, normalizeAngle, randomBetween } from "../utils/math";
 import { createLowPolyVehicleMesh } from "../vehicles/VehicleMeshFactory";
+import { createBlenderSedanMesh } from "../vehicles/BlenderSedanMesh";
+import { trafficModelForScene } from "../graphics/GraphicsMode";
 import type { TrafficSignalAspect } from "./TrafficSignalController";
 
 import { createPursuitImpact, type PursuitImpact } from "./PursuitImpact";
+import { beginBodyStep, createVehicleBody, endBodyStep, setBodySize, type VehicleBody } from "../physics/VehicleBody";
+
+import { NpcRecovery, type RecoveryHandling } from "../physics/NpcRecovery";
+import type { WorldQuery } from "../world/WorldQuery";
 
 export type PursuitPhase = "catchUp" | "align" | "ram" | "recover" | "disabled";
 
@@ -207,8 +213,25 @@ export function trafficSignalSpeedLimit(
   return Math.sqrt(2 * GAME_CONFIG.traffic.braking * availableStoppingDistance);
 }
 
+/** Event vehicles supply driving intent but remain in the ordinary traffic contact pass. */
+export interface TrafficDriver {
+  enabled: boolean;
+  readonly width?: number;
+  readonly length?: number;
+  readonly damagePercent: number;
+  update(body: VehicleBody, dt: number, nearby: readonly TrafficCar[], world?: WorldQuery, player?: VehicleBody): void;
+  impact(body: VehicleBody): void;
+  damage(amount: number): void;
+}
+
 export class TrafficCar {
   readonly mesh: Mesh;
+  driver: TrafficDriver | null = null;
+  readonly collisionBody: VehicleBody;
+  private collisionMotion = false;
+  readonly recovery = new NpcRecovery();
+  private readonly recoveryHandling: RecoveryHandling = { topSpeed: GAME_CONFIG.player.maxForwardSpeed, turning: 1,
+    acceleration: GAME_CONFIG.traffic.acceleration, braking: GAME_CONFIG.traffic.braking };
   respawnGeneration = 0;
   direction: Direction;
   speed: number;
@@ -257,6 +280,7 @@ export class TrafficCar {
     prototype: Mesh,
     spawnProgress = 0,
   ) {
+    this.collisionBody = createVehicleBody(id);
     this.waypoint = waypoint;
     this.direction = direction;
     this.speed = speed;
@@ -269,10 +293,51 @@ export class TrafficCar {
     this.respawn(waypoint, direction, spawnProgress);
   }
 
-  update(
+  update(deltaTime: number, nearbyTraffic: TrafficCar[], signalAspect: TrafficSignalAspect = "green", world?: WorldQuery, player?: VehicleBody): void {
+    beginBodyStep(this.collisionBody, this.mesh.position.x, this.mesh.position.z, this.mesh.rotation.y);
+    if (this.driver) {
+      const body = this.collisionBody;
+      body.x = this.mesh.position.x; body.z = this.mesh.position.z; body.heading = this.mesh.rotation.y;
+      this.driver.update(body, deltaTime, nearbyTraffic, world, player);
+      this.mesh.position.x = body.x; this.mesh.position.z = body.z; this.mesh.rotation.y = body.heading;
+      this.velocityX = body.velocityX; this.velocityZ = body.velocityZ; this.collisionYawRate = body.angularVelocity;
+      this.speed = Math.hypot(body.velocityX, body.velocityZ); this.collisionMotion = body.dynamic;
+    } else this.updateDriving(deltaTime, nearbyTraffic, signalAspect, world, player);
+    this.syncCollisionBody(deltaTime);
+  }
+
+  syncCollisionBody(dt: number): void {
+    const body = this.collisionBody;
+    setBodySize(body, this.driver?.width ?? GAME_CONFIG.traffic.hitboxWidth, this.driver?.length ?? GAME_CONFIG.traffic.hitboxLength);
+    body.dynamic = this.collisionMotion;
+    const yaw = this.collisionMotion ? this.collisionYawRate
+      : dt > 0 ? normalizeAngle(this.mesh.rotation.y - body.startHeading) / dt : 0;
+    endBodyStep(body, this.mesh.position.x, this.mesh.position.z, this.mesh.rotation.y,
+      this.getVelocityX(), this.getVelocityZ(), yaw, dt);
+  }
+
+  applyCollisionBody(): void {
+    const body = this.collisionBody;
+    if (!body.changed) return;
+    this.mesh.position.x = body.x; this.mesh.position.z = body.z; this.mesh.rotation.y = body.heading;
+    this.velocityX = body.velocityX; this.velocityZ = body.velocityZ;
+    this.speed = Math.hypot(this.velocityX, this.velocityZ);
+    this.collisionYawRate = body.angularVelocity;
+    if (this.driver) { this.collisionMotion = body.dynamic; if (body.impulse > .001) this.driver.impact(body); return; }
+    if (body.impulse > .001) {
+      if (!this.collisionMotion) {
+        this.completingTurn = false; this.turnTargets.length = 0; this.retargetCurrentLane();
+      }
+      this.collisionMotion = true;
+      this.recovery.impact(body);
+    }
+  }
+
+  private updateDriving(
     deltaTime: number,
     nearbyTraffic: TrafficCar[],
     signalAspect: TrafficSignalAspect = "green",
+    world?: WorldQuery, player?: VehicleBody,
   ): void {
     this.refreshTurnSignal();
     this.pursuitUTurnCooldown = Math.max(0, this.pursuitUTurnCooldown - deltaTime);
@@ -280,13 +345,13 @@ export class TrafficCar {
     this.accidentStateTimeRemaining = Math.max(0, this.accidentStateTimeRemaining - deltaTime);
     if (!this.pursuitTarget) this.updateCruiseSpeed(deltaTime);
     this.attackRetryRemaining = Math.max(0, this.attackRetryRemaining - deltaTime);
-    if (this.isPursuitDisabled && this.accidentStateValue !== "pursuitRecovery") {
-      this.pursuitPhaseValue = "disabled";
-      this.speed = this.velocityX = this.velocityZ = 0;
+    if (this.collisionMotion || this.accidentStateValue === "pursuitRecovery") {
+      this.updateCollisionRecovery(deltaTime, nearbyTraffic, signalAspect, world, player);
       return;
     }
-    if (this.accidentStateValue === "pursuitRecovery") {
-      this.updatePursuitRecovery(deltaTime);
+    if (this.isPursuitDisabled) {
+      this.pursuitPhaseValue = "disabled";
+      this.speed = this.velocityX = this.velocityZ = 0;
       return;
     }
     if (this.pursuitTarget) this.updatePursuitAttack(deltaTime, nearbyTraffic);
@@ -435,6 +500,7 @@ export class TrafficCar {
   }
 
   refreshTurnSignal(): void {
+    if (this.driver) { this.signalIntent = this.turningSignal = "off"; return; }
     if (this.isPursuing || this.accidentStateValue !== "driving") {
       this.signalIntent = "off";
     } else if (this.completingTurn) {
@@ -461,7 +527,7 @@ export class TrafficCar {
   }
 
   get damagePercent(): number {
-    return this.damagePercentValue;
+    return this.driver?.damagePercent ?? this.damagePercentValue;
   }
 
   get isInPlayerContact(): boolean {
@@ -482,22 +548,13 @@ export class TrafficCar {
     serious: boolean,
     pullOverAfterSerious = true,
   ): void {
+    if (this.driver) { this.driver.damage(damagePercent); return; }
     this.signalIntent = "off";
     this.damagePercentValue = clamp(this.damagePercentValue + Math.max(0, damagePercent), 0, 1);
-    this.speed *= GAME_CONFIG.player.collisionSpeedLoss;
     this.accidentPartnerId = otherId;
     if (this.pursuitTarget) {
-      if (this.accidentStateValue !== "pursuitRecovery"
-        && (serious || damagePercent >= GAME_CONFIG.police.collisionPoliceDamageThreshold)) {
-        this.accidentStateValue = "pursuitRecovery";
-        this.pursuitPhaseValue = "recover";
-        this.accidentStateTimeRemaining = GAME_CONFIG.police.pursuitRecoverySeconds;
-        this.velocityX *= GAME_CONFIG.player.collisionSpeedLoss;
-        this.velocityZ *= GAME_CONFIG.player.collisionSpeedLoss;
-        this.collisionYawRate = (this.rng() < 0.5 ? -1 : 1) * GAME_CONFIG.police.pursuitSpinRate;
-        this.completingTurn = false;
-        this.turnTargets.length = 0;
-      }
+      // Damage still matters, but only a stopped spin-out earns a deliberate pause.
+      this.cancelAttack();
       return;
     }
     if (serious) {
@@ -537,8 +594,8 @@ export class TrafficCar {
       || this.accidentStateValue === "waiting"
       || this.accidentStateValue === "pullingOver"
       || this.accidentStateValue === "stopped") {
-      this.accidentStateValue = "pursuitRecovery";
-      this.accidentStateTimeRemaining = GAME_CONFIG.police.pursuitRecoverySeconds;
+      this.accidentStateValue = "driving";
+      this.accidentStateTimeRemaining = 0;
       this.accidentPullOverTarget = null;
     }
     if (this.accidentStateValue === "pursuitRecovery") return;
@@ -570,7 +627,7 @@ export class TrafficCar {
     if (!this.pursuitTarget) return;
     this.pursuitTarget = null;
     this.pursuitPhaseValue = "catchUp";
-    this.attackTimeRemaining = this.attackRetryRemaining = this.collisionYawRate = 0;
+    this.attackTimeRemaining = this.attackRetryRemaining = 0;
     this.pursuitUTurnRequested = false;
     this.pursuitAvoidanceOffset = 0;
     this.pursuitAvoidanceTimeRemaining = 0;
@@ -589,6 +646,7 @@ export class TrafficCar {
     this.signalIntent = "off";
     this.turningSignal = "off";
     this.respawnGeneration += 1;
+    this.collisionMotion = false; this.recovery.reset();
     this.waypoint = this.laneWaypoint(waypoint, direction);
     this.direction = direction;
     this.target = this.nextWaypoint();
@@ -617,6 +675,7 @@ export class TrafficCar {
     this.velocityX = 0;
     this.velocityZ = 0;
     this.faceTarget();
+    this.syncCollisionBody(0);
   }
 
   dispose(): void {
@@ -628,7 +687,8 @@ export class TrafficCar {
     const length = GAME_CONFIG.traffic.vehicleLength;
     const bodyColor = material.diffuseColor.clone();
     material.diffuseColor = Color3.White();
-    const prototype = createLowPolyVehicleMesh(scene, `traffic-source-${index}`, material, {
+    const model = trafficModelForScene(scene);
+    const prototype = model === "procedural" ? createLowPolyVehicleMesh(scene, `traffic-source-${index}`, material, {
       bodyColor,
       bodyLength: length,
       bodyWidth: width,
@@ -636,7 +696,7 @@ export class TrafficCar {
       cabinLength: length * 0.4,
       cabinWidth: width * 0.72,
       cabinHeight: 1.05,
-    });
+    }) : createBlenderSedanMesh(scene, `traffic-source-${index}`, material, bodyColor, width, length, model);
     prototype.position.y = -10000;
     return prototype;
   }
@@ -861,31 +921,24 @@ export class TrafficCar {
   }
 
   get pursuitRecoveryRemaining(): number {
-    return this.accidentStateValue === "pursuitRecovery" ? this.accidentStateTimeRemaining : 0;
+    return this.accidentStateValue === "pursuitRecovery" ? this.recovery.pauseRemaining : 0;
   }
 
   createRamImpact(
     closingSpeedMph: number,
     directness: number,
     contactTarget: { x: number; z: number; heading: number; vehicleLength: number } = this.pursuitTarget!,
+    contactSource?: { x: number; z: number; heading: number },
   ): PursuitImpact | null {
     if (!this.pursuitTarget || this.pursuitPhase !== "ram"
       || closingSpeedMph < GAME_CONFIG.police.pursuitRamMinimumImpactMph) return null;
     const target = contactTarget;
-    const dx = this.mesh.position.x - target.x;
-    const dz = this.mesh.position.z - target.z;
+    const dx = (contactSource?.x ?? this.mesh.position.x) - target.x;
+    const dz = (contactSource?.z ?? this.mesh.position.z) - target.z;
     const behind = -(dx * Math.sin(target.heading) + dz * Math.cos(target.heading));
     if (behind < target.vehicleLength * 0.2
-      || Math.abs(normalizeAngle(this.mesh.rotation.y - target.heading)) > Math.PI / 3) return null;
-    const side = Math.sign(dx * Math.cos(target.heading) - dz * Math.sin(target.heading)) || this.attackSide;
-    return createPursuitImpact(closingSpeedMph, directness, target.heading, side, this.rng());
-  }
-
-  applyPursuitImpact(impact: PursuitImpact): void {
-    // registerCollision has already reduced forward momentum and started recovery.
-    this.velocityX -= impact.velocityX;
-    this.velocityZ -= impact.velocityZ;
-    this.collisionYawRate = -impact.yawRate;
+      || Math.abs(normalizeAngle((contactSource?.heading ?? this.mesh.rotation.y) - target.heading)) > Math.PI / 3) return null;
+    return createPursuitImpact(closingSpeedMph, directness);
   }
 
   private cancelAttack(): void {
@@ -946,42 +999,42 @@ export class TrafficCar {
     this.pursuitAvoidanceTimeRemaining = 0;
   }
 
-  private updatePursuitRecovery(deltaTime: number): void {
-    this.mesh.rotation.y = normalizeAngle(this.mesh.rotation.y + this.collisionYawRate * deltaTime);
-    this.collisionYawRate *= Math.exp(-GAME_CONFIG.police.pursuitSpinDamping * deltaTime);
-    const drag = Math.exp(-3 * deltaTime);
-    this.velocityX *= drag;
-    this.velocityZ *= drag;
-    const nextX = this.mesh.position.x + this.velocityX * deltaTime;
-    const nextZ = this.mesh.position.z + this.velocityZ * deltaTime;
-    // Keep the sliding collision body on the road; NPCs do not use the player's building solver.
-    const roadX = nearestValue(this.roadPositionsX, this.mesh.position.x);
-    const roadZ = nearestValue(this.roadPositionsZ, this.mesh.position.z);
-    const corridor = Math.abs(this.mesh.position.x - roadX) < Math.abs(this.mesh.position.z - roadZ)
-      ? { axis: "x" as const, center: roadX } : { axis: "z" as const, center: roadZ };
-    const constrained = this.clampToRoadCorridor(nextX, nextZ, corridor);
-    this.mesh.position.x = constrained.x;
-    this.mesh.position.z = constrained.z;
-    if (constrained.x !== nextX) this.velocityX = 0;
-    if (constrained.z !== nextZ) this.velocityZ = 0;
-    this.speed = Math.hypot(this.velocityX, this.velocityZ);
-    if (this.accidentStateTimeRemaining > 1e-6) return;
-    this.speed = this.velocityX = this.velocityZ = this.collisionYawRate = 0;
-    this.accidentStateValue = this.isPursuitDisabled ? "stopped" : "driving";
-    this.pursuitPhaseValue = this.isPursuitDisabled ? "disabled" : "catchUp";
-    this.attackRetryRemaining = GAME_CONFIG.police.pursuitRamRetrySeconds;
-    this.accidentPartnerId = null;
-    this.pursuitUTurnRequested = false;
-    // Rebuild the route from the crash location, without changing the physical heading or position.
-    const horizontal = corridor.axis === "z";
-    const target = this.pursuitTarget!;
-    this.direction = horizontal ? (target.x >= this.mesh.position.x ? "east" : "west")
-      : (target.z >= this.mesh.position.z ? "south" : "north");
-    const ix = this.roadPositionsX.indexOf(roadX);
-    const iz = this.roadPositionsZ.indexOf(roadZ);
-    this.waypoint = this.laneWaypoint({ position: new Vector3(roadX, 1, roadZ), ix, iz }, this.direction);
-    this.target = this.nextWaypoint();
-    this.plannedDirection = this.chooseDirectionAt(this.target);
+  private updateCollisionRecovery(dt: number, traffic: TrafficCar[], aspect: TrafficSignalAspect,
+    world?: WorldQuery, player?: VehicleBody): void {
+    const stop = this.isPursuitDisabled || ["braking", "waiting", "stopped"].includes(this.accidentStateValue);
+    const target = this.chooseDriveTarget(traffic);
+    const dx = target.x - this.mesh.position.x, dz = target.z - this.mesh.position.z;
+    const distance = Math.hypot(dx, dz);
+    const speed = stop ? 0 : this.desiredSpeed(Math.hypot(this.target.position.x - this.mesh.position.x,
+      this.target.position.z - this.mesh.position.z), dx / Math.max(distance, .001), dz / Math.max(distance, .001), traffic, aspect);
+    const body = this.collisionBody;
+    body.x = this.mesh.position.x; body.z = this.mesh.position.z; body.heading = this.mesh.rotation.y;
+    body.velocityX = this.velocityX; body.velocityZ = this.velocityZ; body.angularVelocity = this.collisionYawRate;
+    this.recoveryHandling.topSpeed = this.pursuitTarget ? GAME_CONFIG.police.pursuitSpeed : GAME_CONFIG.player.maxForwardSpeed;
+    this.recoveryHandling.acceleration = this.pursuitTarget ? GAME_CONFIG.police.pursuitAcceleration : GAME_CONFIG.traffic.acceleration;
+    this.recoveryHandling.braking = this.pursuitTarget ? GAME_CONFIG.police.pursuitBraking : GAME_CONFIG.traffic.braking;
+    const settled = this.recovery.drive(body, dt, { x: target.x, z: target.z, speed,
+      handling: this.recoveryHandling, stop, allowPause: this.role === "police" }, world, traffic, player);
+    this.mesh.position.x = body.x; this.mesh.position.z = body.z; this.mesh.rotation.y = body.heading;
+    this.velocityX = body.velocityX; this.velocityZ = body.velocityZ; this.collisionYawRate = body.angularVelocity;
+    this.speed = Math.hypot(body.velocityX, body.velocityZ);
+    if (this.pursuitTarget && this.recovery.pauseRemaining > 1e-8) {
+      this.accidentStateValue = "pursuitRecovery"; this.pursuitPhaseValue = "recover";
+    } else if (this.accidentStateValue === "pursuitRecovery") {
+      this.accidentStateValue = this.isPursuitDisabled ? "stopped" : "driving";
+      this.pursuitPhaseValue = this.isPursuitDisabled ? "disabled" : "catchUp";
+      this.attackRetryRemaining = GAME_CONFIG.police.pursuitRamRetrySeconds;
+      this.accidentPartnerId = null;
+    }
+    if (settled && (!stop || this.speed <= GAME_CONFIG.traffic.accidentStopSpeed)) {
+      this.collisionMotion = false; this.collisionYawRate = 0; this.recovery.reset();
+      if (this.accidentStateValue === "braking") {
+        if (this.hasAccidentPartnerContact()) {
+          this.accidentStateValue = "backing";
+          this.accidentReverseRemaining = GAME_CONFIG.traffic.accidentReverseDistance;
+        } else this.finishAccidentBraking();
+      }
+    }
   }
 
   private predictedPursuitTarget(): ResolvedTrafficPursuitTarget {

@@ -161,33 +161,43 @@ export function createNoirBuilding(
   mesh.rotation.y=facing*Math.PI/2;
   mesh.metadata={district,buildingStyle:pitched?"pitched":stepped?"stepped":"commercial",landmark,streetSides};
   const meshes=[mesh];
-  if (district === "downtown" && (landmark || seed%13===0)) {
-    const sign = new CityGeometry();
-    const color=p.neon[seed%2],sx=landmark?width*.35:0,sy=landmark?height*.45:5;
-    sign.box(sx,sy,-depth/2-.9,landmark?1.8:6.5,landmark?11:2,.5,p.window);
-    // Small vector lettering shares the sign mesh: no text textures or extra draw calls.
-    const glyphs: Record<string,string[]> = {
-      C:["111","100","100","100","111"], A:["010","101","111","101","101"],
-      F:["111","100","110","100","100"], E:["111","100","110","100","111"],
-      H:["101","101","111","101","101"], O:["111","101","101","101","111"],
-      T:["111","010","010","010","010"], L:["100","100","100","100","111"],
-    };
-    const word=landmark?"HOTEL":"CAFE",pixel=.25;
-    for(let letter=0;letter<word.length;letter++) {
-      const left=landmark?sx-.375:sx-word.length*.65+letter*1.3;
-      const top=landmark?sy+4-letter*1.7:sy+.625;
-      glyphs[word[letter]].forEach((row,r)=>{
-        for(let c=0;c<row.length;c++) {
-          if(row[c]!=="1")continue;
-          const start=c;while(c+1<row.length&&row[c+1]==="1")c++;
-          const a=left+start*pixel,b=left+(c+1)*pixel,y=top-r*pixel;
-          sign.face([[a,y-pixel,-depth/2-1.15-layer],[b,y-pixel,-depth/2-1.15-layer],
-            [b,y,-depth/2-1.15-layer],[a,y,-depth/2-1.15-layer]],color);
-        }
-      });
-    }
-    const glow=sign.mesh(scene,`${name}-neon`,neonMaterial,x,z);
-    glow.rotation.y=mesh.rotation.y;meshes.push(glow);
+  if (district === "downtown") {
+    const glow = createBuildingSign(scene, name, x, z, width, depth, height, neonMaterial, landmark, facing);
+    if (glow) meshes.push(glow);
   }
   return meshes;
+}
+
+/** Keep cafe/hotel identity independent of the building's render model. Width/depth are facade-local. */
+export function createBuildingSign(scene: Scene, name: string, x: number, z: number,
+  width: number, depth: number, height: number, neonMaterial: StandardMaterial,
+  landmark = false, facing = 0): Mesh | null {
+  const seed = visualSeed(name), p = CITY_STYLE.palette, layer = CITY_STYLE.facades.surfaceStep;
+  if (!landmark && seed % 13 !== 0) return null;
+  const sign = new CityGeometry();
+  const color=p.neon[seed%2],sx=landmark?width*.35:0,sy=landmark?height*.45:5;
+  sign.box(sx,sy,-depth/2-.9,landmark?1.8:6.5,landmark?11:2,.5,p.window);
+  // Small vector lettering shares the sign mesh: no text textures or extra draw calls.
+  const glyphs: Record<string,string[]> = {
+    C:["111","100","100","100","111"], A:["010","101","111","101","101"],
+    F:["111","100","110","100","100"], E:["111","100","110","100","111"],
+    H:["101","101","111","101","101"], O:["111","101","101","101","111"],
+    T:["111","010","010","010","010"], L:["100","100","100","100","111"],
+  };
+  const word=landmark?"HOTEL":"CAFE",pixel=.25;
+  for(let letter=0;letter<word.length;letter++) {
+    const left=landmark?sx-.375:sx-word.length*.65+letter*1.3;
+    const top=landmark?sy+4-letter*1.7:sy+.625;
+    glyphs[word[letter]].forEach((row,r)=>{
+      for(let c=0;c<row.length;c++) {
+        if(row[c]!=="1")continue;
+        const start=c;while(c+1<row.length&&row[c+1]==="1")c++;
+        const a=left+start*pixel,b=left+(c+1)*pixel,y=top-r*pixel;
+        sign.face([[a,y-pixel,-depth/2-1.15-layer],[b,y-pixel,-depth/2-1.15-layer],
+          [b,y,-depth/2-1.15-layer],[a,y,-depth/2-1.15-layer]],color);
+      }
+    });
+  }
+  const glow=sign.mesh(scene,`${name}-neon`,neonMaterial,x,z);
+  glow.rotation.y=facing*Math.PI/2;return glow;
 }
